@@ -5,13 +5,11 @@ from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit, join_room, leave_room
 
 app = Flask(__name__)
-# ใช้ค่าจาก Environment Variable ตอน deploy จริง อย่า hardcode secret key ลงโค้ด
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dnd_web_secret_1234')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 socketio = SocketIO(app, cors_allowed_origins="*", max_http_buffer_size=1e7)
 
 rooms = {}
-# เก็บ mapping sid -> room_code เพื่อให้ตอน disconnect รู้ว่าต้องลบออกจากห้องไหน
 sid_to_room = {}
 
 STARTING_HP = 100
@@ -110,10 +108,6 @@ def on_leave_room(data):
 
 @socketio.on('disconnect')
 def on_disconnect():
-    """
-    สำคัญมาก: จับตอนที่ผู้เล่นปิดแท็บ/ปิดเบราว์เซอร์/เน็ตหลุด โดยไม่ได้กดปุ่ม
-    'ย้อนกลับ' ก่อน ถ้าไม่มีตัวนี้ ผู้เล่นที่หลุดจะค้างอยู่ในห้องตลอดไป
-    """
     sid = request.sid
     room_code = sid_to_room.get(sid)
     if room_code:
@@ -268,7 +262,6 @@ def on_update_player_level(data):
 
 @socketio.on('spend_stat_point')
 def on_spend_stat_point(data):
-    """ผู้เล่นใช้แต้มที่ได้จากการเลเวลอัป ไปเพิ่ม STR/DEX/INT/CHA หรือ HP (HP +1 แต้ม = MaxHP +5)"""
     sid = request.sid
     room_code = data.get('room_code')
     stat = data.get('stat')
@@ -293,7 +286,6 @@ def on_spend_stat_point(data):
 
 @socketio.on('change_skill')
 def on_change_skill(data):
-    """ผู้เล่นใช้แต้ม 10 แต้ม เปลี่ยนชื่อ+คำอธิบายสกิลช่องใดช่องหนึ่ง"""
     sid = request.sid
     room_code = data.get('room_code')
     skill_index = data.get('skill_index')
@@ -315,7 +307,6 @@ def on_change_skill(data):
 
 @socketio.on('dm_edit_skill_desc')
 def on_dm_edit_skill_desc(data):
-    """DM แก้ไขคำอธิบายสกิลของผู้เล่นคนไหนก็ได้ระหว่างเล่นเกม"""
     room_code = data.get('room_code')
     target_sid = data.get('target_sid')
     skill_index = data.get('skill_index')
@@ -330,7 +321,6 @@ def on_dm_edit_skill_desc(data):
 
 @socketio.on('dm_toggle_roll_permission')
 def on_dm_toggle_roll_permission(data):
-    """DM คลิกเลือกว่าใครทอยเต๋าได้บ้าง (ระบบเทิร์น) — ทอยได้ครั้งเดียวต่อการอนุญาต 1 ครั้ง"""
     room_code = data.get('room_code')
     target_sid = data.get('target_sid')
 
@@ -436,7 +426,6 @@ def on_roll_dice(data):
         if not player or not player.get("can_roll", False):
             emit('error_msg', {'message': '🔒 รอ DM อนุญาตให้คุณทอยเต๋าก่อนนะ!'})
             return
-        # ใช้สิทธิ์ทอยของเทิร์นนี้ไปแล้ว ต้องรอ DM อนุญาตใหม่
         player["can_roll"] = False
         broadcast_game_state(room_code)
 
@@ -460,8 +449,6 @@ def on_roll_dice(data):
 
 
 if __name__ == '__main__':
-    # host='0.0.0.0' จำเป็นเวลา deploy จริง เพื่อให้เครื่องอื่นต่อเข้ามาได้
-    # PORT อ่านจาก environment variable เพราะ hosting ส่วนใหญ่ (Render/Railway ฯลฯ) กำหนด PORT ให้เอง
     port = int(os.environ.get('PORT', 5000))
     debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
     socketio.run(app, host='0.0.0.0', port=port, debug=debug_mode)
