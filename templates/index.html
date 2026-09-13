@@ -1,24 +1,945 @@
-<!-- ส่วนแสดงและอัปเดต Stat / HP -->
-<div class="stat-container">
-    <div class="stat-row">
-        <span>STR: <b id="stat-str">0</b></span>
-        <button onclick="spendStatPoint('STR')" class="btn-stat">+1</button>
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>D&D Web Multiplayer</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        * { box-sizing: border-box; user-select: text; }
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; background-color: #121212; color: #fff; text-align: center; padding: 10px; margin: 0; overflow-x: hidden; }
+        .card { background: #1e1e1e; border-radius: 12px; padding: 20px; width: 100%; max-width: 480px; margin: 0 auto 15px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); }
+        input[type="text"], input[type="number"], select, textarea, button { width: 100%; padding: 12px; margin: 6px 0; border-radius: 8px; border: 1px solid #333; background: #2a2a2a; color: white; font-size: 15px; box-sizing: border-box; }
+
+        button { background: #2563eb; cursor: pointer; font-weight: bold; border: none; transition: transform 0.1s ease, background 0.2s; touch-action: manipulation; }
+        button:hover { background: #1d4ed8; }
+        button:active { transform: scale(0.97); }
+        button:disabled { background: #4b5563 !important; cursor: not-allowed !important; transform: none !important; opacity: 0.6; }
+
+        .btn-start { background: #10b981 !important; font-size: 18px; padding: 14px; margin: 15px 0 !important; display: block !important; width: 100%; }
+        .btn-start:hover { background: #059669 !important; }
+        .btn-back { background: #4b5563; width: auto; padding: 8px 16px; float: left; margin: 0; }
+
+        .stat-row { display: flex; justify-content: space-between; align-items: center; margin: 8px 0; padding: 0 5px; }
+        .stat-btn { width: 36px; height: 36px; padding: 0; line-height: 36px; background: #374151; margin: 0 2px; font-size: 16px; }
+        .hidden { display: none !important; }
+        .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+
+        .avatar-container { margin: 10px 0; display: flex; flex-direction: column; align-items: center; }
+        .avatar-box { width: 80px; height: 80px; border-radius: 50%; border: 3px solid #f59e0b; background: #2a2a2a; margin-bottom: 6px; display: flex; align-items: center; justify-content: center; overflow: hidden; position: relative; }
+        .avatar-box img { width: 100%; height: 100%; object-fit: cover; }
+
+        .default-avatar-css { width: 100%; height: 100%; background-color: #374151; position: relative; border-radius: 50%; }
+        .default-avatar-css::before { content: ''; position: absolute; top: 20%; left: 50%; transform: translateX(-50%); width: 32%; height: 32%; background-color: #9ca3af; border-radius: 50%; }
+        .default-avatar-css::after { content: ''; position: absolute; bottom: 0; left: 50%; transform: translateX(-50%); width: 65%; height: 40%; background-color: #9ca3af; border-radius: 50% 50% 0 0; }
+
+        .file-input { display: none; }
+        .upload-btn { background: #374151; width: auto; font-size: 13px; padding: 8px 16px; border-radius: 20px; cursor: pointer; display: inline-block; color: #ccc; }
+        .upload-btn:hover { background: #4b5563; color: white; }
+
+        .player-item { background: #2d2d2d; padding: 10px; margin: 6px 0; border-radius: 6px; text-align: left; font-size: 14px; border-left: 4px solid #2563eb; display: flex; align-items: center; gap: 12px; }
+        .player-avatar-box { width: 45px; height: 45px; border-radius: 50%; border: 2px solid #555; background: #1a1a1a; flex-shrink: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+        .player-avatar-box img { width: 100%; height: 100%; object-fit: cover; }
+        .player-info { flex-grow: 1; }
+
+        .room-code-badge { font-size: 32px; font-weight: bold; color: #f59e0b; letter-spacing: 4px; background: #111; padding: 10px 20px; border-radius: 8px; border: 1px dashed #f59e0b; display: inline-block; margin: 10px 0; }
+        .pulse-text { animation: pulse 1.5s infinite; color: #10b981; }
+        @keyframes pulse { 0% { opacity: 0.4; } 50% { opacity: 1; } 100% { opacity: 0.4; } }
+
+        /* Responsive Layout */
+        .game-layout { display: flex; gap: 15px; width: 100%; max-width: 1400px; margin: 0 auto; text-align: left; min-height: calc(100vh - 20px); }
+        .sidebar-left { width: 340px; flex-shrink: 0; background: #1e1e1e; border-radius: 12px; padding: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: column; }
+        .tab-buttons { display: flex; gap: 4px; margin-bottom: 12px; }
+        .tab-btn { flex: 1; padding: 10px 4px; font-size: 12px; background: #2a2a2a; border: 1px solid #444; margin: 0; border-radius: 6px; }
+        .tab-btn.active { background: #2563eb; border-color: #3b82f6; }
+        .tab-content { flex-grow: 1; overflow-y: auto; }
+
+        .main-chat-area { flex-grow: 1; background: #1e1e1e; border-radius: 12px; padding: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: column; gap: 10px; }
+        .chat-box { flex-grow: 1; background: #121212; border-radius: 8px; padding: 12px; overflow-y: auto; border: 1px solid #2a2a2a; display: flex; flex-direction: column; gap: 10px; min-height: 250px; }
+        .chat-msg { background: #262626; padding: 10px 12px; border-radius: 8px; font-size: 14px; word-break: break-word; }
+        .chat-msg .sender { font-weight: bold; color: #f59e0b; font-size: 12px; margin-bottom: 3px; }
+        .chat-msg.dm-chat { background: #3b1f1f; border-left: 4px solid #ef4444; color: #fca5a5; }
+        .chat-msg.dice-result-msg { background: #221c12; border-left: 4px solid #d97706; color: #fef08a; }
+
+        .chat-input-row { display: flex; gap: 8px; }
+        .chat-input-row input { margin: 0; }
+        .chat-input-row button { width: 80px; margin: 0; background: #10b981; flex-shrink: 0; }
+
+        .combat-banner { background: #3a1515; border: 2px solid #dc2626; border-radius: 8px; padding: 10px; margin-bottom: 8px; display: flex; align-items: center; gap: 12px; }
+        .combat-banner.npc-banner { background: #332b12; border-color: #eab308; }
+        .combat-banner.dead-banner { background: #222 !important; border-color: #555 !important; opacity: 0.5; filter: grayscale(100%); }
+        .combat-avatar { width: 50px; height: 50px; border-radius: 50%; border: 2px solid #ef4444; background: #000; overflow: hidden; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+        .combat-banner.npc-banner .combat-avatar { border-color: #eab308; }
+        .combat-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .combat-info { flex-grow: 1; }
+
+        .sidebar-right { width: 320px; flex-shrink: 0; background: #1e1e1e; border-radius: 12px; padding: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.6); display: flex; flex-direction: column; align-items: center; overflow-y: auto; }
+        .dice-panel { background: #2a2a2a; border-radius: 8px; padding: 12px; margin-bottom: 12px; border: 1px solid #3d3d3d; width: 100%; }
+        .dice-btn { background: #d97706; font-size: 15px; padding: 12px; margin-top: 8px; width: 100%; }
+
+        .dice-3d-container { width: 70px; height: 70px; perspective: 600px; margin: 8px auto; display: flex; align-items: center; justify-content: center; }
+        .dice-cube { width: 45px; height: 45px; position: relative; transform-style: preserve-3d; transition: transform 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        .dice-face { position: absolute; width: 45px; height: 45px; background: #d97706; border: 2px solid #b45309; border-radius: 6px; color: white; font-size: 16px; font-weight: bold; display: flex; align-items: center; justify-content: center; box-shadow: inset 0 0 10px rgba(0,0,0,0.3); }
+        @keyframes roll3d { 0% { transform: rotateX(0deg) rotateY(0deg) rotateZ(0deg); } 50% { transform: rotateX(360deg) rotateY(720deg) rotateZ(180deg); } 100% { transform: rotateX(720deg) rotateY(1440deg) rotateZ(360deg); } }
+        .rolling { animation: roll3d 0.8s ease-in-out; }
+
+        .dice-log { height: 140px; width: 100%; background: #121212; border: 1px solid #333; border-radius: 6px; padding: 10px; overflow-y: auto; font-size: 13px; font-family: monospace; text-align: left; }
+        .log-entry { margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #222; }
+
+        .party-card { background: #2a2a2a; border-radius: 10px; padding: 10px; margin-bottom: 10px; border: 1px solid #333; transition: all 0.3s ease; }
+        .party-card.dead-card { background: #1a1a1a !important; border-color: #444 !important; opacity: 0.5; filter: grayscale(100%); }
+        .party-header { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+        .party-name { font-weight: bold; font-size: 14px; color: #fff; }
+        .party-class { font-size: 12px; color: #aaa; }
+        .hp-bar-container { width: 100%; background: #441c1c; height: 16px; border-radius: 8px; overflow: hidden; position: relative; margin: 6px 0; border: 1px solid #552222; }
+        .hp-bar-fill { height: 100%; background: linear-gradient(90deg, #dc2626, #ef4444); border-radius: 8px; }
+        .hp-text { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 10px; font-weight: bold; color: #fff; text-shadow: 1px 1px 2px #000; }
+        .party-stats { display: flex; justify-content: space-between; background: #1f1f1f; padding: 6px 8px; border-radius: 4px; font-size: 11px; color: #bbb; margin-bottom: 6px; }
+        .party-skills-box { font-size: 11px; color: #cbd5e1; background: #171717; padding: 8px; border-radius: 6px; margin-top: 4px; }
+        .item-card { background: #1e293b; border: 1px solid #3b82f6; padding: 8px; border-radius: 6px; margin-top: 6px; text-align: left; }
+
+        .dm-controls-box { background: #241919; border: 1px solid #7f1d1d; border-radius: 8px; padding: 10px; margin-top: 8px; }
+        .dm-controls-box input { margin: 3px 0; padding: 6px; font-size: 12px; }
+
+        .wallet-box { background: #242419; border: 1px solid #eab308; border-radius: 8px; padding: 12px; margin-bottom: 12px; text-align: center; }
+        .transfer-box { background: #1f1f1f; border: 1px solid #444; border-radius: 8px; padding: 10px; }
+
+        .btn-upgrade-stat { background: #10b981; font-size: 11px; padding: 6px 8px; width: 100%; margin: 2px 0; border-radius: 6px; }
+        .skill-item-box { background: #1a1a1a; padding: 6px; border-radius: 4px; margin-bottom: 6px; border: 1px solid #333; }
+
+        @media (max-width: 1024px) {
+            body { padding: 5px; }
+            .game-layout { flex-direction: column; height: auto; min-height: 100vh; gap: 10px; }
+            .sidebar-left, .main-chat-area, .sidebar-right { width: 100%; max-width: 100%; height: auto; min-height: auto; }
+            .chat-box { height: 250px; }
+            .dice-log { height: 120px; }
+            .room-code-badge { font-size: 24px; padding: 8px 16px; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- [1] หน้า Lobby -->
+    <div id="lobby-screen" class="card">
+        <h2>⚔️ D&D Web Lobby</h2>
+        <button onclick="playClickSound(); createRoom();">➕ สร้างห้องใหม่ (เป็น DM)</button>
+        <p style="color: #888; margin: 15px 0;">— หรือ —</p>
+        <input type="text" id="input-room-code" placeholder="กรอกรหัสห้อง 4 หลัก (เช่น A7X9)" style="text-transform:uppercase; text-align:center;">
+        <button onclick="playClickSound(); joinRoom();" style="background: #059669;">🔑 เข้าร่วมห้อง (เป็นผู้เล่น)</button>
+        <p id="error-msg" style="color: #ef4444; font-size: 14px;"></p>
     </div>
-    <div class="stat-row">
-        <span>DEX: <b id="stat-dex">0</b></span>
-        <button onclick="spendStatPoint('DEX')" class="btn-stat">+1</button>
+
+    <!-- [2] หน้ารอห้องสำหรับ DM -->
+    <div id="dm-lobby-screen" class="card hidden">
+        <div class="top-bar">
+            <button class="btn-back" onclick="playClickSound(); leaveRoom();">⬅️ ปิดห้อง</button>
+            <h3 style="margin: 0; color: #f59e0b;">👑 ห้องของ DM</h3>
+        </div>
+        <p style="margin-bottom: 4px; color: #aaa;">แชร์รหัสห้องนี้ให้ผู้เล่นเพื่อเข้าร่วม:</p>
+        <div class="room-code-badge" id="dm-display-room-code">XXXX</div>
+
+        <h4 style="text-align: left; margin-top: 20px; margin-bottom: 8px; color: #60a5fa;">👥 ผู้เล่นที่สร้างตัวละครเสร็จแล้ว (<span id="dm-player-count">0</span> คน)</h4>
+        <div id="dm-waiting-player-list" style="max-height: 220px; overflow-y: auto;">
+            <p style="color: #666; font-style: italic;">กำลังรอผู้เล่นสร้างตัวละคร...</p>
+        </div>
+
+        <button id="btn-start-game" class="btn-start" disabled onclick="playClickSound(); startGame();">🚀 เริ่มเกมเลย! (รอผู้เล่นสร้างตัวละคร...)</button>
     </div>
-    <div class="stat-row">
-        <span>INT: <b id="stat-int">0</b></span>
-        <button onclick="spendStatPoint('INT')" class="btn-stat">+1</button>
+
+    <!-- [3] หน้าสร้างตัวละครของผู้เล่น -->
+    <div id="char-screen" class="card hidden" style="max-width: 520px;">
+        <div class="top-bar">
+            <button class="btn-back" onclick="playClickSound(); leaveRoom();">⬅️ ย้อนกลับ</button>
+            <h3 style="margin: 0; color: #f59e0b;">ห้อง: <span id="display-room-code">-</span></h3>
+        </div>
+
+        <div class="avatar-container">
+            <div id="avatar-preview-box" class="avatar-box">
+                <div class="default-avatar-css"></div>
+            </div>
+            <label for="char-avatar-input" class="upload-btn">📷 เลือกรูปตัวละคร</label>
+            <input type="file" id="char-avatar-input" class="file-input" accept="image/*" onchange="previewImage(event)">
+        </div>
+
+        <input type="text" id="char-name" placeholder="ตั้งชื่อตัวละคร...">
+        <input type="text" id="char-class" placeholder="พิมพ์อาชีพของคุณ เช่น นักรบ, จอมเวท...">
+
+        <h4 style="margin: 10px 0 5px 0; text-align: left; color: #f59e0b; font-size: 14px;">✨ กำหนดสกิลตัวละคร (4 สกิล)</h4>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+            <input type="text" id="skill-1" placeholder="สกิลที่ 1" style="margin:0;">
+            <input type="text" id="skill-2" placeholder="สกิลที่ 2" style="margin:0;">
+            <input type="text" id="skill-3" placeholder="สกิลที่ 3" style="margin:0;">
+            <input type="text" id="skill-4" placeholder="สกิลที่ 4" style="margin:0;">
+        </div>
+
+        <h3 style="margin: 10px 0 5px 0;">แต้มสเตตัสคงเหลือ: <span id="points-left" style="color:#10b981;">5</span></h3>
+        <div id="stats-container"></div>
+
+        <button id="btn-submit" onclick="playClickSound(); submitCharacter();" style="margin-top: 15px; background: #d97706;">💾 บันทึกและยืนยันตัวละคร</button>
     </div>
-    <div class="stat-row">
-        <span>CHA: <b id="stat-cha">0</b></span>
-        <button onclick="spendStatPoint('CHA')" class="btn-stat">+1</button>
+
+    <!-- [4] หน้ารอ DM กดเริ่มเกมสำหรับผู้เล่น -->
+    <div id="player-waiting-screen" class="card hidden">
+        <h2 style="color: #10b981; margin-bottom: 10px;">✅ สร้างตัวละครเสร็จแล้ว!</h2>
+        <div class="avatar-box" id="ready-avatar-preview" style="margin: 0 auto 15px;"></div>
+        <h3 id="ready-char-name" style="margin: 5px 0; color: #f59e0b;">-</h3>
+        <p id="ready-char-class" style="color: #aaa; margin-top: 0;">-</p>
+
+        <div style="margin: 30px 0;">
+            <div class="pulse-text" style="font-size: 18px; font-weight: bold;">⏳ กำลังรอ Dungeon Master กดเริ่มเกม...</div>
+        </div>
+
+        <button class="btn-back" style="float: none;" onclick="playClickSound(); backToEditChar();">✏️ แก้ไขตัวละคร</button>
     </div>
-    <!-- เพิ่มแถบอัป HP ตรงนี้ -->
-    <div class="stat-row hp-stat-row" style="background: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; margin-top: 6px; padding: 4px 8px; border-radius: 6px;">
-        <span>Max HP (+5):</span>
-        <button onclick="spendStatPoint('HP')" class="btn-stat" style="background: #ef4444;">+ HP</button>
+
+    <!-- [5] หน้าโต๊ะเล่นเกม -->
+    <div id="game-screen" class="game-layout hidden">
+        <div class="sidebar-left">
+            <div class="tab-buttons">
+                <button id="btn-tab-party" class="tab-btn active" onclick="playClickSound(); switchTab('party');">👥 ปาร์ตี้</button>
+                <button id="btn-tab-dm-rewards" class="tab-btn hidden" onclick="playClickSound(); switchTab('dm-rewards');" style="background: #d97706;">🎁 ของรางวัล</button>
+                <button id="btn-tab-stats" class="tab-btn" onclick="playClickSound(); switchTab('stats');">📊 สเตตัส</button>
+                <button id="btn-tab-wallet" class="tab-btn" onclick="playClickSound(); switchTab('wallet');">💰 กระเป๋าเงิน</button>
+            </div>
+
+            <div id="tab-content-party" class="tab-content">
+                <div id="game-player-list"></div>
+            </div>
+
+            <div id="tab-content-dm-rewards" class="tab-content hidden" style="font-size: 13px; padding: 5px;">
+                <div style="font-weight: bold; color: #f59e0b; font-size: 14px; margin-bottom: 8px;">🎁 เมนูของรางวัล & การเงิน (DM)</div>
+                <div style="background: #242419; border: 1px solid #eab308; border-radius: 8px; padding: 10px; margin-bottom: 10px;">
+                    <div style="font-weight: bold; color: #facc15; margin-bottom: 4px;">💰 มอบเงิน / หักเงิน</div>
+                    <label style="font-size: 11px; color: #aaa;">เลือกผู้รับเงิน:</label>
+                    <select id="dm-gold-target" style="margin-bottom: 4px; padding: 6px; font-size: 12px;"></select>
+                    <input type="number" id="dm-gold-amount" placeholder="จำนวนเงิน (G)..." value="50" style="margin-bottom: 6px; padding: 6px; font-size: 12px;">
+                    <div style="display: flex; gap: 4px;">
+                        <button onclick="playClickSound(); dmGiveGold(1)" style="background: #10b981; padding: 6px; font-size: 12px;">➕ มอบเงิน</button>
+                        <button onclick="playClickSound(); dmGiveGold(-1)" style="background: #ef4444; padding: 6px; font-size: 12px;">➖ หักเงิน</button>
+                    </div>
+                </div>
+
+                <div style="background: #1e293b; border: 1px solid #3b82f6; border-radius: 8px; padding: 10px;">
+                    <div style="font-weight: bold; color: #60a5fa; margin-bottom: 4px;">⚔️ สร้างและแจกไอเทม</div>
+                    <label style="font-size: 11px; color: #aaa;">มอบไอเทมให้:</label>
+                    <select id="dm-item-target" style="margin-bottom: 4px; padding: 6px; font-size: 12px;"></select>
+                    <input type="text" id="dm-item-name" placeholder="ชื่อไอเทม..." style="margin-bottom: 4px; padding: 6px; font-size: 12px;">
+                    <textarea id="dm-item-desc" placeholder="รายละเอียดไอเทม..." rows="2" style="margin-bottom: 6px; padding: 6px; font-size: 12px;"></textarea>
+                    <button onclick="playClickSound(); dmGiveItem()" style="background: #2563eb; padding: 8px; font-size: 13px;">🎁 มอบไอเทม</button>
+                </div>
+            </div>
+
+            <div id="tab-content-stats" class="tab-content hidden" style="font-size: 13px; color: #cbd5e1; padding: 5px;">
+                <div id="my-character-sheet"></div>
+            </div>
+            <div id="tab-content-wallet" class="tab-content hidden" style="font-size: 13px; color: #cbd5e1; padding: 5px;">
+                <div id="my-wallet-panel"></div>
+            </div>
+        </div>
+
+        <div class="main-chat-area">
+            <div style="font-weight: bold; color: #10b981; font-size: 16px; padding-bottom: 8px; border-bottom: 1px solid #333; margin-bottom: 5px;">
+                💬 แชทรวมในปาร์ตี้ <span id="game-room-code-tag" style="float: right; color: #f59e0b; font-size: 14px;"></span>
+            </div>
+            <div id="active-combat-container" style="max-height: 200px; overflow-y: auto;"></div>
+            <div id="global-chat-box" class="chat-box">
+                <div class="chat-msg" style="color: #888; text-align: center;">
+                    <i>ยินดีต้อนรับสู่โต๊ะเกม D&D! เริ่มการสนทนาหรือทอยลูกเต๋าได้เลย</i>
+                </div>
+            </div>
+            <div class="chat-input-row">
+                <input type="text" id="global-chat-input" placeholder="พิมพ์ข้อความ..." onkeypress="handleChatKeyPress(event)">
+                <button onclick="playClickSound(); sendGlobalChat();">ส่ง</button>
+            </div>
+        </div>
+
+        <div class="sidebar-right">
+            <div style="font-weight: bold; color: #d97706; font-size: 16px; padding-bottom: 8px; border-bottom: 1px solid #333; margin-bottom: 10px; width: 100%; text-align: center;">
+                🎲 เครื่องทอยเต๋า 3D
+            </div>
+            <div class="dice-3d-container">
+                <div id="dice-cube" class="dice-cube">
+                    <div class="dice-face" style="transform: rotateY(0deg) translateZ(22px);">🎲</div>
+                    <div class="dice-face" style="transform: rotateY(90deg) translateZ(22px);">⚔️</div>
+                    <div class="dice-face" style="transform: rotateY(180deg) translateZ(22px);">🛡️</div>
+                    <div class="dice-face" style="transform: rotateY(-90deg) translateZ(22px);">✨</div>
+                    <div class="dice-face" style="transform: rotateX(90deg) translateZ(22px);">🔥</div>
+                    <div class="dice-face" style="transform: rotateX(-90deg) translateZ(22px);">👑</div>
+                </div>
+            </div>
+            <div class="dice-panel">
+                <select id="select-dice">
+                    <option value="20">d20 (หลัก)</option>
+                    <option value="4">d4</option>
+                    <option value="6">d6</option>
+                    <option value="8">d8</option>
+                    <option value="10">d10</option>
+                    <option value="12">d12</option>
+                    <option value="100">d100</option>
+                </select>
+                <select id="select-stat">
+                    <option value="NONE">ไม่บวก Stat</option>
+                    <option value="STR">+ STR</option>
+                    <option value="DEX">+ DEX</option>
+                    <option value="INT">+ INT</option>
+                    <option value="CHA">+ CHA</option>
+                </select>
+                <button id="btn-roll-dice" class="dice-btn" onclick="playDiceSound(); rollDice();">🎲 ทอยเต๋า 3D</button>
+            </div>
+
+            <!-- เมนูสร้างมอนสเตอร์/ตัวละคร NPC สำหรับ DM -->
+            <div id="dm-monster-creator" class="dm-controls-box hidden" style="width: 100%; box-sizing: border-box; margin-bottom: 15px;">
+                <div style="font-weight: bold; color: #ef4444; font-size: 13px; margin-bottom: 6px;">⚔️ สร้างมอนสเตอร์ / ตัวละคร (DM)</div>
+                <select id="monster-entity-type" style="padding: 6px; font-size: 12px; margin-bottom: 4px;">
+                    <option value="monster">🔴 มอนสเตอร์ / ศัตรู</option>
+                    <option value="npc">🟡 ตัวละครธรรมดา (NPC)</option>
+                </select>
+                <input type="text" id="monster-name" placeholder="ชื่อตัวละคร/มอนสเตอร์...">
+                <input type="number" id="monster-hp" placeholder="พลังชีวิต (HP)" value="50">
+                <input type="number" id="monster-atk" placeholder="พลังโจมตี (ATK)" value="10">
+                <label for="monster-avatar-file" class="upload-btn" style="width: 100%; box-sizing: border-box; text-align: center; margin: 4px 0;">📷 ดึงรูปจากเครื่อง</label>
+                <input type="file" id="monster-avatar-file" class="file-input" accept="image/*" onchange="previewMonsterImage(event)">
+                <div id="monster-avatar-preview" style="width: 40px; height: 40px; border-radius: 50%; border: 1px solid #555; margin: 4px auto; display: none; overflow: hidden;"></div>
+                <button onclick="playClickSound(); addMonsterEvent();" style="background: #dc2626; margin-top: 6px;">➕ เพิ่มลงสนาม</button>
+                <button onclick="playClickSound(); clearCombatEvents();" style="background: #4b5563; margin-top: 4px;">🛑 ล้างทั้งหมด</button>
+            </div>
+
+            <div style="font-size: 12px; color: #aaa; margin-bottom: 4px; width: 100%; text-align: left;">📜 ประวัติการทอย</div>
+            <div id="dice-log-box" class="dice-log"></div>
+        </div>
     </div>
-</div>
+
+    <script>
+        const socket = io();
+        let currentRoomCode = "";
+        let isUserDM = false;
+        let remainingPoints = 5;
+        let currentAvatarBase64 = "";
+        let monsterAvatarBase64 = "";
+        let myCurrentCharacterData = null;
+        let allPartyPlayers = [];
+        const defaultCssAvatar = `<div class="default-avatar-css"></div>`;
+        const stats = { STR: 0, DEX: 0, INT: 0, CHA: 0 };
+
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        function playClickSound() {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.05);
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.05);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.05);
+        }
+
+        function playDiceSound() {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            for (let i = 0; i < 4; i++) {
+                setTimeout(() => {
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(200 + Math.random() * 400, audioCtx.currentTime);
+                    gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
+                    osc.connect(gain);
+                    gain.connect(audioCtx.destination);
+                    osc.start();
+                    osc.stop(audioCtx.currentTime + 0.08);
+                }, i * 100);
+            }
+        }
+
+        const container = document.getElementById('stats-container');
+        Object.keys(stats).forEach(stat => {
+            container.innerHTML += `
+                <div class="stat-row">
+                    <span><b>${stat}:</b> <span id="val-${stat}">0</span></span>
+                    <div>
+                        <button class="stat-btn" onclick="playClickSound(); changeStat('${stat}', -1)">-</button>
+                        <button class="stat-btn" onclick="playClickSound(); changeStat('${stat}', 1)">+</button>
+                    </div>
+                </div>`;
+        });
+
+        function switchTab(tabName) {
+            ['party', 'dm-rewards', 'stats', 'wallet'].forEach(t => {
+                const btn = document.getElementById(`btn-tab-${t}`);
+                const content = document.getElementById(`tab-content-${t}`);
+                if (btn) btn.classList.remove('active');
+                if (content) content.classList.add('hidden');
+            });
+            const activeBtn = document.getElementById(`btn-tab-${tabName}`);
+            const activeContent = document.getElementById(`tab-content-${tabName}`);
+            if (activeBtn) activeBtn.classList.add('active');
+            if (activeContent) activeContent.classList.remove('hidden');
+        }
+
+        function createRoom() { socket.emit('create_room'); }
+        function joinRoom() {
+            const code = document.getElementById('input-room-code').value.trim();
+            if (code) socket.emit('join_room', { room_code: code });
+        }
+
+        function leaveRoom() {
+            socket.emit('leave_room_event', { room_code: currentRoomCode });
+            document.getElementById('char-screen').classList.add('hidden');
+            document.getElementById('dm-lobby-screen').classList.add('hidden');
+            document.getElementById('player-waiting-screen').classList.add('hidden');
+            document.getElementById('game-screen').classList.add('hidden');
+            document.getElementById('lobby-screen').classList.remove('hidden');
+            resetStats();
+        }
+
+        function resetStats() {
+            remainingPoints = 5;
+            currentAvatarBase64 = "";
+            document.getElementById('avatar-preview-box').innerHTML = defaultCssAvatar;
+            document.getElementById('char-avatar-input').value = "";
+            Object.keys(stats).forEach(s => stats[s] = 0);
+            updateStatsUI();
+            document.getElementById('char-name').value = "";
+            document.getElementById('char-class').value = "";
+            for(let i=1; i<=4; i++) document.getElementById(`skill-${i}`).value = "";
+        }
+
+        function previewImage(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    const maxSize = 200;
+                    let width = img.width, height = img.height;
+                    if (width > height) { if (width > maxSize) { height *= maxSize / width; width = maxSize; } }
+                    else { if (height > maxSize) { height *= maxSize / height; height = maxSize; } }
+                    canvas.width = width; canvas.height = height;
+                    ctx.drawImage(img, 0, 0, width, height);
+                    currentAvatarBase64 = canvas.toDataURL('image/jpeg', 0.8);
+                    document.getElementById('avatar-preview-box').innerHTML = `<img src="${currentAvatarBase64}">`;
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function previewMonsterImage(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    const maxSize = 200;
+                    let width = img.width, height = img.height;
+                    if (width > height) { if (width > maxSize) { height *= maxSize / width; width = maxSize; } }
+                    else { if (height > maxSize) { height *= maxSize / height; height = maxSize; } }
+                    canvas.width = width; canvas.height = height;
+                    ctx.drawImage(img, 0, 0, width, height);
+                    monsterAvatarBase64 = canvas.toDataURL('image/jpeg', 0.8);
+                    const prevBox = document.getElementById('monster-avatar-preview');
+                    prevBox.style.display = 'block';
+                    prevBox.innerHTML = `<img src="${monsterAvatarBase64}" style="width:100%; height:100%; object-fit:cover;">`;
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function changeStat(statName, amount) {
+            if (amount > 0 && remainingPoints > 0) { stats[statName]++; remainingPoints--; }
+            else if (amount < 0 && stats[statName] > 0) { stats[statName]--; remainingPoints++; }
+            updateStatsUI();
+        }
+
+        function updateStatsUI() {
+            Object.keys(stats).forEach(s => document.getElementById(`val-${s}`).innerText = stats[s]);
+            document.getElementById('points-left').innerText = remainingPoints;
+        }
+
+        function submitCharacter() {
+            const name = document.getElementById('char-name').value.trim();
+            if (!name) { alert("กรุณากรอกชื่อตัวละครด้วยครับ!"); return; }
+            let charClass = document.getElementById('char-class').value.trim() || "นักผจญภัย";
+            const skills = [
+                document.getElementById('skill-1').value.trim(),
+                document.getElementById('skill-2').value.trim(),
+                document.getElementById('skill-3').value.trim(),
+                document.getElementById('skill-4').value.trim()
+            ].filter(s => s !== "");
+
+            myCurrentCharacterData = { name, char_class: charClass, stats, avatar: currentAvatarBase64, skills };
+            socket.emit('submit_character', { room_code: currentRoomCode, ...myCurrentCharacterData });
+            document.getElementById('char-screen').classList.add('hidden');
+            document.getElementById('player-waiting-screen').classList.remove('hidden');
+            document.getElementById('ready-avatar-preview').innerHTML = currentAvatarBase64 ? `<img src="${currentAvatarBase64}">` : defaultCssAvatar;
+            document.getElementById('ready-char-name').innerText = name;
+            document.getElementById('ready-char-class').innerText = charClass;
+        }
+
+        function backToEditChar() {
+            document.getElementById('player-waiting-screen').classList.add('hidden');
+            document.getElementById('char-screen').classList.remove('hidden');
+        }
+
+        function startGame() { socket.emit('start_game', { room_code: currentRoomCode }); }
+
+        function sendGlobalChat() {
+            const input = document.getElementById('global-chat-input');
+            const msg = input.value.trim();
+            if (msg) {
+                socket.emit('send_global_chat', { room_code: currentRoomCode, message: msg });
+                input.value = "";
+            }
+        }
+
+        function handleChatKeyPress(event) {
+            if (event.key === 'Enter') { playClickSound(); sendGlobalChat(); }
+        }
+
+        socket.on('receive_global_chat', data => {
+            const chatBox = document.getElementById('global-chat-box');
+            const div = document.createElement('div');
+            div.className = data.is_dm ? 'chat-msg dm-chat' : 'chat-msg';
+            div.innerHTML = `<div class="sender">${data.sender}</div><div>${data.message}</div>`;
+            chatBox.appendChild(div);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        });
+
+        function rollDice() {
+            const diceCube = document.getElementById('dice-cube');
+            diceCube.classList.remove('rolling');
+            void diceCube.offsetWidth;
+            diceCube.classList.add('rolling');
+            const diceType = parseInt(document.getElementById('select-dice').value);
+            const statUsed = isUserDM ? 'NONE' : document.getElementById('select-stat').value;
+            socket.emit('roll_dice', { room_code: currentRoomCode, dice_type: diceType, stat_used: statUsed });
+        }
+
+        socket.on('dice_rolled_event', data => {
+            const logBox = document.getElementById('dice-log-box');
+            let statText = data.stat_used !== 'NONE' ? ` (+${data.stat_bonus} ${data.stat_used})` : '';
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = `<b>${data.player_name}</b> ทอย d${data.dice_type}: <span style="color:#f59e0b;font-weight:bold">${data.raw_roll}</span>${statText} 👉 รวม = <b>${data.total}</b>`;
+            logBox.appendChild(entry);
+            logBox.scrollTop = logBox.scrollHeight;
+
+            const chatBox = document.getElementById('global-chat-box');
+            const chatDiv = document.createElement('div');
+            chatDiv.className = 'chat-msg dice-result-msg';
+            chatDiv.innerHTML = `<div class="sender">🎲 ผลการทอยเต๋าจาก ${data.player_name}</div><div>ทอย <b>d${data.dice_type}</b> ได้ <span style="color:#f59e0b;font-weight:bold">${data.raw_roll}</span>${statText} 👉 <b>รวมแต้มทั้งหมด = ${data.total}</b></div>`;
+            chatBox.appendChild(chatDiv);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        });
+
+        socket.on('room_created', data => { isUserDM = true; enterRoom(data.room_code); });
+        socket.on('room_joined', data => { isUserDM = data.is_dm; enterRoom(data.room_code); });
+        socket.on('error_msg', data => alert(data.message));
+        socket.on('room_closed', () => { alert("ห้องถูกปิดโดย DM"); location.reload(); });
+
+        socket.on('update_player_list', data => {
+            const dmWaitingList = document.getElementById('dm-waiting-player-list');
+            const dmPlayerCount = document.getElementById('dm-player-count');
+            if (dmWaitingList && isUserDM) {
+                dmPlayerCount.innerText = data.players.length;
+                if (data.players.length === 0) {
+                    dmWaitingList.innerHTML = `<p style="color: #666; font-style: italic;">กำลังรอผู้เล่นสร้างตัวละคร...</p>`;
+                } else {
+                    dmWaitingList.innerHTML = "";
+                    data.players.forEach(p => {
+                        const avatarHtml = p.avatar ? `<img src="${p.avatar}">` : defaultCssAvatar;
+                        dmWaitingList.innerHTML += `
+                            <div class="player-item">
+                                <div class="player-avatar-box">${avatarHtml}</div>
+                                <div class="player-info">
+                                    <b>• ${p.name}</b> (${p.char_class})<br>
+                                    <small style="color:#aaa">STR:${p.stats.STR} | DEX:${p.stats.DEX} | INT:${p.stats.INT} | CHA:${p.stats.CHA}</small>
+                                </div>
+                            </div>`;
+                    });
+                }
+            }
+        });
+
+        socket.on('game_state_update', data => {
+            allPartyPlayers = data.players;
+
+            if (isUserDM) {
+                const btnStart = document.getElementById('btn-start-game');
+                if (data.players && data.players.length > 0) {
+                    btnStart.disabled = false; btnStart.innerText = "🚀 เริ่มเกมเลย!";
+                } else {
+                    btnStart.disabled = true; btnStart.innerText = "🚀 เริ่มเกมเลย! (รอผู้เล่นสร้างตัวละคร...)";
+                }
+
+                const dmGoldTarget = document.getElementById('dm-gold-target');
+                const dmItemTarget = document.getElementById('dm-item-target');
+                if (dmGoldTarget && dmItemTarget) {
+                    let playerOptions = `<option value="ALL">✨ ผู้เล่นทุกคนในปาร์ตี้</option>`;
+                    data.players.forEach(p => { playerOptions += `<option value="${p.sid}">🛡️ ${p.name} (${p.char_class})</option>`; });
+                    dmGoldTarget.innerHTML = playerOptions;
+                    dmItemTarget.innerHTML = playerOptions;
+                }
+            }
+
+            if (data.game_started) {
+                document.getElementById('lobby-screen').classList.add('hidden');
+                document.getElementById('dm-lobby-screen').classList.add('hidden');
+                document.getElementById('char-screen').classList.add('hidden');
+                document.getElementById('player-waiting-screen').classList.add('hidden');
+                document.getElementById('game-screen').classList.remove('hidden');
+
+                const gameListDiv = document.getElementById('game-player-list');
+                gameListDiv.innerHTML = "";
+
+                data.players.forEach(p => {
+                    const avatarHtml = p.avatar ? `<img src="${p.avatar}">` : defaultCssAvatar;
+                    const hpPercent = Math.max(0, (p.hp / p.max_hp) * 100);
+                    const isDead = p.hp <= 0;
+                    
+                    let dmControlsHtml = '';
+                    if (isUserDM) {
+                        dmControlsHtml = `
+                            <div class="dm-controls-box">
+                                <div style="font-size:11px; color:#f87171; font-weight:bold; margin-bottom:4px; display:flex; justify-content:space-between; align-items:center;">
+                                    <span>⚙️ จัดการ (${p.name})</span>
+                                    <button onclick="toggleRollPerm('${p.sid}')" style="background:${p.can_roll ? '#10b981':'#374151'}; width:auto; padding:2px 6px; font-size:10px;">
+                                        ${p.can_roll ? '🎯 ทอยเต๋าได้ (1 ครั้ง)' : '🔒 ห้ามทอยเต๋า'}
+                                    </button>
+                                </div>
+                                <div style="display:flex; gap:2px; margin-bottom:4px;">
+                                    <input type="number" id="custom-hp-${p.sid}" placeholder="ปรับ HP..." style="padding:2px 4px; font-size:11px; margin:0;">
+                                    <button onclick="applyCustomHP('${p.sid}', -1)" style="background:#dc2626; width:auto; padding:2px 6px; font-size:10px;">ลบ</button>
+                                    <button onclick="applyCustomHP('${p.sid}', 1)" style="background:#059669; width:auto; padding:2px 6px; font-size:10px;">บวก</button>
+                                </div>
+                                <div style="display:flex; gap:2px;">
+                                    <button onclick="updatePlayerProperty('${p.sid}', 'gold', 50)" style="background:#d97706; padding:2px; font-size:10px;">+50 G</button>
+                                    <button onclick="updatePlayerProperty('${p.sid}', 'gold', -50)" style="background:#b45309; padding:2px; font-size:10px;">-50 G</button>
+                                    <button onclick="updatePlayerProperty('${p.sid}', 'level', 1)" style="background:#2563eb; padding:2px; font-size:10px;">+1 LVL</button>
+                                </div>
+                            </div>`;
+                    }
+
+                    const skillsHtml = p.skills.map((sk, idx) => `
+                        <div class="skill-item-box">
+                            <div style="font-weight:bold; color:#f59e0b;">✨ ${sk.name || 'ไม่มีชื่อสกิล'}</div>
+                            <div style="font-size:10px; color:#aaa;">${sk.desc || 'ไม่มีคำอธิบาย'}</div>
+                            ${isUserDM ? `<button onclick="dmEditSkillDesc('${p.sid}', ${idx})" style="background:#374151; font-size:9px; padding:2px 4px; width:auto; margin-top:2px;">✏️ แก้คำอธิบาย</button>` : ''}
+                        </div>
+                    `).join('');
+
+                    gameListDiv.innerHTML += `
+                        <div class="party-card ${isDead ? 'dead-card' : ''}">
+                            <div class="party-header">
+                                <div class="player-avatar-box">${avatarHtml}</div>
+                                <div>
+                                    <div class="party-name">🛡️ ${p.name} <span style="color:#eab308; font-size:11px;">(Lv.${p.level})</span></div>
+                                    <div class="party-class">${p.char_class} | 💰 ${p.gold} G ${p.can_roll ? '🎲' : ''}</div>
+                                </div>
+                            </div>
+                            <div class="hp-bar-container">
+                                <div class="hp-bar-fill" style="width: ${hpPercent}%; ${isDead ? 'background:#555;' : ''}"></div>
+                                <span class="hp-text">${isDead ? '💀 สลบ / HP 0' : `HP ${p.hp} / ${p.max_hp}`}</span>
+                            </div>
+                            <div class="party-stats">
+                                <span>STR <b>${p.stats.STR}</b></span>
+                                <span>DEX <b>${p.stats.DEX}</b></span>
+                                <span>INT <b>${p.stats.INT}</b></span>
+                                <span>CHA <b>${p.stats.CHA}</b></span>
+                            </div>
+                            <div class="party-skills-box">
+                                ${skillsHtml}
+                            </div>
+                            ${dmControlsHtml}
+                        </div>`;
+
+                    if (!isUserDM && p.sid === socket.id) {
+                        myCurrentCharacterData = p;
+                        const rollBtn = document.getElementById('btn-roll-dice');
+                        if (rollBtn) {
+                            rollBtn.disabled = !p.can_roll;
+                            rollBtn.innerText = p.can_roll ? '🎲 ทอยเต๋า 3D' : '🔒 รอ DM อนุญาต';
+                        }
+                        renderMyStats();
+                        renderMyWallet();
+                    }
+                });
+
+                if (!isUserDM) renderMyWallet();
+
+                const combatContainer = document.getElementById('active-combat-container');
+                if (data.combat_list && data.combat_list.length > 0) {
+                    let combatHtml = "";
+                    data.combat_list.forEach(m => {
+                        const hpPercent = Math.max(0, (m.hp / m.max_hp) * 100);
+                        const isDead = m.hp <= 0;
+                        const isNpc = m.entity_type === 'npc';
+                        const monsterAvatar = m.avatar ? `<img src="${m.avatar}">` : `<div class="default-avatar-css"></div>`;
+                        
+                        let dmMonsterHPControl = '';
+                        if (isUserDM) {
+                            dmMonsterHPControl = `
+                                <div style="display:flex; gap:2px; margin-top:4px;">
+                                    <input type="number" id="custom-m-hp-${m.id}" placeholder="ปรับ HP..." style="padding:2px 4px; font-size:10px; margin:0; width:70px;">
+                                    <button onclick="applyMonsterCustomHP('${m.id}', -1)" style="background:#dc2626; width:auto; padding:2px 6px; font-size:10px;">ลบ</button>
+                                    <button onclick="applyMonsterCustomHP('${m.id}', 1)" style="background:#059669; width:auto; padding:2px 6px; font-size:10px;">บวก</button>
+                                </div>`;
+                        }
+
+                        combatHtml += `
+                            <div class="combat-banner ${isNpc ? 'npc-banner' : ''} ${isDead ? 'dead-banner' : ''}">
+                                <div class="combat-avatar">${monsterAvatar}</div>
+                                <div class="combat-info">
+                                    <div style="font-weight:bold; color:${isNpc ? '#facc15' : '#ef4444'}; font-size:14px;">
+                                        ${isNpc ? '🟡 NPC' : '⚔️ มอนสเตอร์'}: ${m.name}
+                                    </div>
+                                    <div style="font-size:10px; color:#ccc;">ATK: ${m.attack}</div>
+                                    <div class="hp-bar-container" style="margin-top:2px;">
+                                        <div class="hp-bar-fill" style="width: ${hpPercent}%; ${isDead ? 'background:#555;' : ''}"></div>
+                                        <span class="hp-text">${isDead ? '💀 สลบ / HP 0' : `HP ${m.hp} / ${m.max_hp}`}</span>
+                                    </div>
+                                    ${dmMonsterHPControl}
+                                </div>
+                            </div>`;
+                    });
+                    combatContainer.innerHTML = combatHtml;
+                } else {
+                    combatContainer.innerHTML = "";
+                }
+            }
+        });
+
+        function renderMyStats() {
+            if (!myCurrentCharacterData) return;
+            const myStatsDiv = document.getElementById('my-character-sheet');
+            const avatarHtml = myCurrentCharacterData.avatar ? `<img src="${myCurrentCharacterData.avatar}">` : defaultCssAvatar;
+            const hpPercent = Math.max(0, (myCurrentCharacterData.hp / myCurrentCharacterData.max_hp) * 100);
+            const points = myCurrentCharacterData.stat_points || 0;
+
+            const itemsHtml = myCurrentCharacterData.items && myCurrentCharacterData.items.length > 0
+                ? myCurrentCharacterData.items.map((item, index) => `
+                    <div class="item-card" style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+                        <div>
+                            <div style="font-weight:bold; color:#f6e05e;">🗡️ ${item.name}</div>
+                            <div style="font-size:11px; color:#cbd5e1; margin-top:2px;">${item.desc || 'ไม่มีคำอธิบาย'}</div>
+                        </div>
+                        <button onclick="playClickSound(); useItem(${index});" style="background: #10b981; width: auto; padding: 6px 12px; font-size: 11px; margin: 0; flex-shrink: 0;">✨ ใช้</button>
+                    </div>`).join('')
+                : '<div style="font-size:11px; color:#888;">ยังไม่มีไอเทม</div>';
+
+            const skillsUpgradeHtml = myCurrentCharacterData.skills.map((s, idx) => `
+                <div class="skill-item-box">
+                    <div style="font-weight:bold; color:#f59e0b;">${s.name || 'ช่องสกิลว่าง'}</div>
+                    <div style="font-size:10px; color:#aaa; margin-bottom:4px;">${s.desc || 'ไม่มีคำอธิบาย'}</div>
+                    <button onclick="changeSkillModal(${idx})" style="background:#2563eb; font-size:10px; padding:3px 6px; width:auto;" ${points < 10 ? 'disabled' : ''}>✏️ เปลี่ยนสกิล (ใช้ 10 แต้ม)</button>
+                </div>
+            `).join('');
+
+            myStatsDiv.innerHTML = `
+                <div class="party-card" style="border-color: #f59e0b;">
+                    <div style="background:#10b981; color:#000; font-weight:bold; text-align:center; padding:6px; border-radius:6px; margin-bottom:8px; font-size:13px;">
+                        ⭐ แต้มอัปสเตตัสคงเหลือ: <span style="font-size:16px;">${points}</span> แต้ม
+                    </div>
+                    <div class="party-header">
+                        <div class="player-avatar-box">${avatarHtml}</div>
+                        <div>
+                            <div class="party-name">🛡️ ${myCurrentCharacterData.name} <span style="color:#eab308;">(Lv.${myCurrentCharacterData.level})</span></div>
+                            <div class="party-class">${myCurrentCharacterData.char_class} | 💰 ${myCurrentCharacterData.gold} G</div>
+                        </div>
+                    </div>
+                    <div class="hp-bar-container">
+                        <div class="hp-bar-fill" style="width: ${hpPercent}%;"></div>
+                        <span class="hp-text">HP ${myCurrentCharacterData.hp} / ${myCurrentCharacterData.max_hp}</span>
+                    </div>
+
+                    <div style="background:#171717; padding:8px; border-radius:6px; margin:6px 0;">
+                        <div style="font-size:11px; color:#aaa; margin-bottom:4px;"><b>💪 อัปเกรดสเตตัส (ใช้ 1 แต้ม):</b></div>
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:4px;">
+                            <button onclick="spendStatPoint('STR')" class="btn-upgrade-stat" ${points < 1 ? 'disabled' : ''}>+1 STR (${myCurrentCharacterData.stats.STR})</button>
+                            <button onclick="spendStatPoint('DEX')" class="btn-upgrade-stat" ${points < 1 ? 'disabled' : ''}>+1 DEX (${myCurrentCharacterData.stats.DEX})</button>
+                            <button onclick="spendStatPoint('INT')" class="btn-upgrade-stat" ${points < 1 ? 'disabled' : ''}>+1 INT (${myCurrentCharacterData.stats.INT})</button>
+                            <button onclick="spendStatPoint('CHA')" class="btn-upgrade-stat" ${points < 1 ? 'disabled' : ''}>+1 CHA (${myCurrentCharacterData.stats.CHA})</button>
+                        </div>
+                        <button onclick="spendStatPoint('HP')" class="btn-upgrade-stat" style="background:#ef4444; width:100%; margin-top:4px;" ${points < 1 ? 'disabled' : ''}>+5 Max HP (ปัจจุบัน ${myCurrentCharacterData.max_hp})</button>
+                    </div>
+
+                    <div class="party-skills-box">
+                        <div style="margin-bottom:4px; color:#f59e0b;"><b>✨ สกิลของคุณ:</b></div>
+                        ${skillsUpgradeHtml}
+                    </div>
+
+                    <div class="party-skills-box" style="margin-top:8px; background:#111827;">
+                        <div style="margin-bottom:4px; color:#60a5fa;"><b>🎒 กระเป๋าไอเทม:</b></div>
+                        ${itemsHtml}
+                    </div>
+                </div>`;
+        }
+
+        function spendStatPoint(stat) {
+            socket.emit('spend_stat_point', { room_code: currentRoomCode, stat: stat });
+        }
+
+        function changeSkillModal(index) {
+            const newName = prompt("กรอกชื่อท่า/สกิลใหม่:");
+            if (!newName) return;
+            const newDesc = prompt("กรอกคำอธิบายความสามารถสกิลใหม่:");
+            socket.emit('change_skill', {
+                room_code: currentRoomCode,
+                skill_index: index,
+                name: newName,
+                desc: newDesc || ""
+            });
+        }
+
+        function dmEditSkillDesc(targetSid, index) {
+            const newDesc = prompt("แก้ไขคำอธิบายสกิลนี้ (สำหรับ DM):");
+            if (newDesc !== null) {
+                socket.emit('dm_edit_skill_desc', {
+                    room_code: currentRoomCode,
+                    target_sid: targetSid,
+                    skill_index: index,
+                    desc: newDesc
+                });
+            }
+        }
+
+        function toggleRollPerm(targetSid) {
+            socket.emit('dm_toggle_roll_permission', { room_code: currentRoomCode, target_sid: targetSid });
+        }
+
+        function applyCustomHP(targetSid, sign) {
+            const input = document.getElementById(`custom-hp-${targetSid}`);
+            const val = parseInt(input.value);
+            if (!val) return;
+            socket.emit('update_player_hp', { room_code: currentRoomCode, target_sid: targetSid, hp_change: val * sign });
+            input.value = "";
+        }
+
+        function applyMonsterCustomHP(monsterId, sign) {
+            const input = document.getElementById(`custom-m-hp-${monsterId}`);
+            const val = parseInt(input.value);
+            if (!val) return;
+            socket.emit('update_monster_hp', { room_code: currentRoomCode, monster_id: monsterId, hp_change: val * sign });
+            input.value = "";
+        }
+
+        function useItem(index) {
+            if (confirm("คุณต้องการกดใช้ไอเทมชิ้นนี้ใช่หรือไม่?")) {
+                socket.emit('use_item', { room_code: currentRoomCode, item_index: index });
+            }
+        }
+
+        function renderMyWallet() {
+            if (!myCurrentCharacterData) return;
+            const walletDiv = document.getElementById('my-wallet-panel');
+            const otherPlayers = allPartyPlayers.filter(p => p.sid !== socket.id);
+            let optionsHtml = otherPlayers.map(p => `<option value="${p.sid}">${p.name} (${p.char_class})</option>`).join('');
+
+            walletDiv.innerHTML = `
+                <div class="wallet-box">
+                    <div style="font-size: 13px; color: #aaa;">เงินในกระเป๋าของคุณ</div>
+                    <div style="font-size: 22px; font-weight: bold; color: #facc15; margin-top: 4px;">💰 ${myCurrentCharacterData.gold} G</div>
+                </div>
+                <div class="transfer-box">
+                    <div style="font-weight: bold; color: #60a5fa; font-size: 13px; margin-bottom: 6px;">💸 โอนเงินให้ผู้อื่น</div>
+                    <label style="font-size: 11px; color: #aaa;">เลือกผู้รับ:</label>
+                    <select id="transfer-target" style="margin-bottom: 6px;">${optionsHtml || '<option value="">ไม่มีผู้เล่นอื่น</option>'}</select>
+                    <label style="font-size: 11px; color: #aaa;">จำนวนเงิน (G):</label>
+                    <input type="number" id="transfer-amount" placeholder="ระบุจำนวนเงิน..." value="10" min="1" style="margin-bottom: 8px;">
+                    <button onclick="playClickSound(); sendGoldTransfer();" style="background: #10b981; padding: 8px; font-size: 13px;">📤 ยืนยันการโอนเงิน</button>
+                </div>`;
+        }
+
+        function dmGiveGold(multiplier) {
+            const targetSid = document.getElementById('dm-gold-target').value;
+            const amount = parseInt(document.getElementById('dm-gold-amount').value) * multiplier;
+            if (isNaN(amount) || amount === 0) return;
+            socket.emit('update_player_gold', { room_code: currentRoomCode, target_sid: targetSid, gold_change: amount });
+        }
+
+        function dmGiveItem() {
+            const targetSid = document.getElementById('dm-item-target').value;
+            const name = document.getElementById('dm-item-name').value.trim();
+            const desc = document.getElementById('dm-item-desc').value.trim();
+            if (!name) { alert("กรุณากรอกชื่อไอเทมด้วยครับ!"); return; }
+            socket.emit('give_item', { room_code: currentRoomCode, target_sid: targetSid, name: name, description: desc });
+            document.getElementById('dm-item-name').value = "";
+            document.getElementById('dm-item-desc').value = "";
+        }
+
+        function sendGoldTransfer() {
+            const receiverSid = document.getElementById('transfer-target').value;
+            const amount = parseInt(document.getElementById('transfer-amount').value);
+            if (!receiverSid || !amount || amount <= 0) { alert("กรุณากรอกข้อมูลโอนเงินให้ครบถ้วน!"); return; }
+            socket.emit('transfer_gold', { room_code: currentRoomCode, receiver_sid: receiverSid, amount: amount });
+        }
+
+        function updatePlayerProperty(targetSid, prop, val) {
+            if (prop === 'hp') socket.emit('update_player_hp', { room_code: currentRoomCode, target_sid: targetSid, hp_change: val });
+            else if (prop === 'gold') socket.emit('update_player_gold', { room_code: currentRoomCode, target_sid: targetSid, gold_change: val });
+            else if (prop === 'level') socket.emit('update_player_level', { room_code: currentRoomCode, target_sid: targetSid, lvl_change: val });
+        }
+
+        function addMonsterEvent() {
+            const entityType = document.getElementById('monster-entity-type').value;
+            const name = document.getElementById('monster-name').value.trim() || (entityType === 'npc' ? "ชาวบ้าน" : "ก็อบลิน");
+            const hp = parseInt(document.getElementById('monster-hp').value) || 50;
+            const attack = parseInt(document.getElementById('monster-atk').value) || 10;
+            
+            socket.emit('add_monster_event', {
+                room_code: currentRoomCode,
+                entity_type: entityType,
+                name: name,
+                hp: hp,
+                attack: attack,
+                avatar: monsterAvatarBase64
+            });
+            monsterAvatarBase64 = "";
+            document.getElementById('monster-avatar-preview').style.display = 'none';
+        }
+
+        function clearCombatEvents() { socket.emit('clear_combat_events', { room_code: currentRoomCode }); }
+
+        function enterRoom(code) {
+            currentRoomCode = code;
+            document.getElementById('lobby-screen').classList.add('hidden');
+            document.getElementById('game-room-code-tag').innerText = `รหัสห้อง: ${code}`;
+
+            if (isUserDM) {
+                document.getElementById('dm-lobby-screen').classList.remove('hidden');
+                document.getElementById('char-screen').classList.add('hidden');
+                document.getElementById('player-waiting-screen').classList.add('hidden');
+                document.getElementById('game-screen').classList.add('hidden');
+                document.getElementById('dm-monster-creator').classList.remove('hidden');
+                document.getElementById('btn-tab-dm-rewards').classList.remove('hidden');
+                document.getElementById('btn-tab-wallet').style.display = 'none';
+                document.getElementById('btn-tab-stats').style.display = 'none';
+                document.getElementById('dm-display-room-code').innerText = code;
+            } else {
+                resetStats();
+                document.getElementById('dm-lobby-screen').classList.add('hidden');
+                document.getElementById('char-screen').classList.remove('hidden');
+                document.getElementById('player-waiting-screen').classList.add('hidden');
+                document.getElementById('game-screen').classList.add('hidden');
+                document.getElementById('dm-monster-creator').classList.add('hidden');
+                document.getElementById('btn-tab-dm-rewards').classList.add('hidden');
+                document.getElementById('btn-tab-wallet').style.display = 'inline-block';
+                document.getElementById('btn-tab-stats').style.display = 'inline-block';
+                document.getElementById('display-room-code').innerText = code;
+            }
+        }
+    </script>
+</body>
+</html>
