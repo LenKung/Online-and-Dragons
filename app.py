@@ -12,10 +12,10 @@ socketio = SocketIO(app, cors_allowed_origins="*", max_http_buffer_size=1e7)
 rooms = {}
 sid_to_room = {}
 
-STARTING_HP = 100
+BASE_HP = 100
+HP_PER_POINT = 5
 POINTS_PER_LEVEL = 5
 SKILL_CHANGE_COST = 10
-BASE_STATS = ("STR", "DEX", "INT", "CHA")
 
 
 def generate_room_code():
@@ -38,7 +38,8 @@ def on_create_room():
         "game_started": False,
         "dm_sid": sid,
         "players": {},
-        "active_combat_list": []
+        "active_combat_list": [],
+        "allowed_rollers": set()
     }
     sid_to_room[sid] = room_code
     join_room(room_code)
@@ -69,8 +70,6 @@ def on_submit_character(data):
     if room_code in rooms:
         raw_skills = data.get('skills', [])
         skills = [{"name": s, "desc": ""} for s in raw_skills]
-        while len(skills) < 4:
-            skills.append({"name": "", "desc": ""})
 
         rooms[room_code]["players"][sid] = {
             "sid": sid,
@@ -80,13 +79,11 @@ def on_submit_character(data):
             "avatar": data.get('avatar', ''),
             "skills": skills,
             "items": [],
-            "hp": STARTING_HP,
-            "max_hp": STARTING_HP,
+            "hp": BASE_HP,
+            "max_hp": BASE_HP,
             "level": 1,
             "gold": 100,
-            "stat_points": 0,
-            "alive": True,
-            "can_roll": False
+            "unspent_points": 0
         }
         broadcast_game_state(room_code)
 
@@ -124,6 +121,7 @@ def _remove_player_from_room(sid, room_code):
 
     if sid in rooms[room_code]["players"]:
         del rooms[room_code]["players"][sid]
+    rooms[room_code]["allowed_rollers"].discard(sid)
 
     if sid == rooms[room_code]["dm_sid"]:
         del rooms[room_code]
@@ -158,23 +156,7 @@ def on_update_player_hp(data):
     if room_code in rooms and target_sid in rooms[room_code]["players"]:
         player = rooms[room_code]["players"][target_sid]
         player["hp"] = max(0, min(player["max_hp"], player["hp"] + hp_change))
-        player["alive"] = player["hp"] > 0
         broadcast_game_state(room_code)
-
-
-@socketio.on('update_monster_hp')
-def on_update_monster_hp(data):
-    room_code = data.get('room_code')
-    monster_id = data.get('monster_id')
-    hp_change = int(data.get('hp_change', 0))
-
-    if room_code in rooms:
-        for m in rooms[room_code]["active_combat_list"]:
-            if m["id"] == monster_id:
-                m["hp"] = max(0, min(m["max_hp"], m["hp"] + hp_change))
-                m["alive"] = m["hp"] > 0
-                broadcast_game_state(room_code)
-                break
 
 
 @socketio.on('update_player_gold')
@@ -246,87 +228,108 @@ def on_use_item(data):
 
 @socketio.on('update_player_level')
 def on_update_player_level(data):
+    """
+    DM กด +1 LVL ให้ผู้เล่น -> เลเวลขึ้น และได้ 'แต้มสเตตัส' มาสะสมไว้
+    (ไม่บวก HP อัตโนมัติอีกต่อไป ผู้เล่นต้องไปกดอัปเองในแท็บสเตตัส)
+    """
     room_code = data.get('room_code')
     target_sid = data.get('target_sid')
     lvl_change = int(data.get('lvl_change', 0))
 
     if room_code in rooms and target_sid in rooms[room_code]["players"]:
         player = rooms[room_code]["players"][target_sid]
-        old_level = player["level"]
-        player["level"] = max(1, player["level"] + lvl_change)
-        actual_change = player["level"] - old_level
-        if actual_change > 0:
-            player["stat_points"] = player.get("stat_points", 0) + POINTS_PER_LEVEL * actual_change
+        new_level = max(1, player["level"] + lvl_change)
+        if lvl_change > 0:
+            player["unspent_points"] = player.get("unspent_points", 0) + (lvl_change * POINTS_PER_LEVEL)
+        player["level"] = new_level
         broadcast_game_state(room_code)
 
 
 @socketio.on('spend_stat_point')
 def on_spend_stat_point(data):
+    """
+    ผู้เล่นใช้แต้มสะสม 1 แต้ม เพื่ออัป STR/DEX/INT/CHA/HP ทีละ 1 ขั้น
+    HP 1 ขั้น = MaxHP +5 (และฟื้นเลือดเท่ากับที่เพิ่ม)
+    """
     sid = request.sid
     room_code = data.get('room_code')
     stat = data.get('stat')
 
-    if room_code in rooms and sid in rooms[room_code]["players"]:
-        player = rooms[room_code]["players"][sid]
-        if player.get("stat_points", 0) < 1:
-            emit('error_msg', {'message': 'แต้มสเตตัสไม่พอ!'})
-            return
+    if room_code not in rooms or sid not in rooms[room_code]["players"]:
+        return
 
-        if stat == "HP":
-            player["max_hp"] += 5
-            player["hp"] = min(player["max_hp"], player["hp"] + 5)
-        elif stat in BASE_STATS and stat in player["stats"]:
-            player["stats"][stat] += 1
-        else:
-            return
+    player = rooms[room_code]["players"][sid]
+    if player.get("unspent_points", 0) < 1:
+        emit('error_msg', {'message': 'แต้มสเตตัสไม่พอ!'})
+        return
 
-        player["stat_points"] -= 1
-        broadcast_game_state(room_code)
+    if stat in ("STR", "DEX", "INT", "CHA"):
+        player["stats"][stat] = player["stats"].get(stat, 0) + 1
+        player["unspent_points"] -= 1
+    elif stat == "HP":
+        player["max_hp"] += HP_PER_POINT
+        player["hp"] = min(player["max_hp"], player["hp"] + HP_PER_POINT)
+        player["unspent_points"] -= 1
+    else:
+        return
+
+    broadcast_game_state(room_code)
 
 
 @socketio.on('change_skill')
 def on_change_skill(data):
+    """
+    ผู้เล่นใช้แต้มสะสม 10 แต้ม เพื่อเปลี่ยนชื่อ/คำอธิบายสกิลช่องใดช่องหนึ่ง
+    """
     sid = request.sid
     room_code = data.get('room_code')
     skill_index = data.get('skill_index')
-    name = data.get('name', '').strip()
-    desc = data.get('desc', '').strip()
+    new_name = data.get('name', '').strip()
+    new_desc = data.get('desc', '').strip()
 
-    if room_code in rooms and sid in rooms[room_code]["players"] and name:
-        player = rooms[room_code]["players"][sid]
-        if player.get("stat_points", 0) < SKILL_CHANGE_COST:
-            emit('error_msg', {'message': f'ต้องใช้ {SKILL_CHANGE_COST} แต้มในการเปลี่ยนสกิล!'})
-            return
-        if not (isinstance(skill_index, int) and 0 <= skill_index < len(player["skills"])):
-            return
+    if room_code not in rooms or sid not in rooms[room_code]["players"]:
+        return
 
-        player["stat_points"] -= SKILL_CHANGE_COST
-        player["skills"][skill_index] = {"name": name, "desc": desc}
-        broadcast_game_state(room_code)
+    player = rooms[room_code]["players"][sid]
+    skills = player.get("skills", [])
+
+    if not (isinstance(skill_index, int) and 0 <= skill_index < len(skills)):
+        return
+    if not new_name:
+        emit('error_msg', {'message': 'กรุณาตั้งชื่อท่าใหม่ด้วยครับ!'})
+        return
+    if player.get("unspent_points", 0) < SKILL_CHANGE_COST:
+        emit('error_msg', {'message': f'ต้องใช้แต้มสเตตัส {SKILL_CHANGE_COST} แต้มในการเปลี่ยนสกิล!'})
+        return
+
+    player["unspent_points"] -= SKILL_CHANGE_COST
+    skills[skill_index] = {"name": new_name, "desc": new_desc}
+
+    broadcast_game_state(room_code)
+    emit('receive_global_chat', {
+        'sender': '✨ ระบบสกิล',
+        'message': f"🔮 **{player['name']}** ได้ปลดล็อกท่าใหม่: **[{new_name}]**!",
+        'is_dm': False
+    }, room=room_code)
 
 
 @socketio.on('dm_edit_skill_desc')
 def on_dm_edit_skill_desc(data):
+    """DM แก้คำอธิบายสกิลของผู้เล่นคนไหนก็ได้ในเกม (ไม่เสียแต้ม)"""
+    sid = request.sid
     room_code = data.get('room_code')
     target_sid = data.get('target_sid')
     skill_index = data.get('skill_index')
-    desc = data.get('desc', '').strip()
+    new_desc = data.get('desc', '').strip()
 
-    if room_code in rooms and target_sid in rooms[room_code]["players"]:
-        player = rooms[room_code]["players"][target_sid]
-        if isinstance(skill_index, int) and 0 <= skill_index < len(player["skills"]):
-            player["skills"][skill_index]["desc"] = desc
-            broadcast_game_state(room_code)
+    if room_code not in rooms or sid != rooms[room_code]["dm_sid"]:
+        return
+    if target_sid not in rooms[room_code]["players"]:
+        return
 
-
-@socketio.on('dm_toggle_roll_permission')
-def on_dm_toggle_roll_permission(data):
-    room_code = data.get('room_code')
-    target_sid = data.get('target_sid')
-
-    if room_code in rooms and target_sid in rooms[room_code]["players"]:
-        player = rooms[room_code]["players"][target_sid]
-        player["can_roll"] = not player.get("can_roll", False)
+    skills = rooms[room_code]["players"][target_sid].get("skills", [])
+    if isinstance(skill_index, int) and 0 <= skill_index < len(skills):
+        skills[skill_index]["desc"] = new_desc
         broadcast_game_state(room_code)
 
 
@@ -358,33 +361,50 @@ def on_transfer_gold(data):
 def on_add_monster_event(data):
     room_code = data.get('room_code')
     if room_code in rooms:
-        entity_type = data.get('entity_type', 'monster')
-        if entity_type not in ('monster', 'npc'):
-            entity_type = 'monster'
-
         monster = {
             "id": ''.join(random.choices(string.ascii_lowercase + string.digits, k=6)),
             "name": data.get('name'),
             "hp": int(data.get('hp', 50)),
             "max_hp": int(data.get('hp', 50)),
             "attack": int(data.get('attack', 10)),
-            "avatar": data.get('avatar', ''),
-            "entity_type": entity_type,
-            "alive": True
+            "avatar": data.get('avatar', '')
         }
         rooms[room_code]["active_combat_list"].append(monster)
         broadcast_game_state(room_code)
-
-        if entity_type == 'npc':
-            msg = f"🟡 ตัวละครปรากฏตัว: **{monster['name']}**!"
-        else:
-            msg = f"⚠️ ศัตรูปรากฏตัว: **{monster['name']}** (HP: {monster['hp']})!"
-
         emit('receive_global_chat', {
             'sender': '👑 [Dungeon Master]',
-            'message': msg,
+            'message': f"⚠️ ศัตรูปรากฏตัว: **{monster['name']}** (HP: {monster['hp']})!",
             'is_dm': True
         }, room=room_code)
+
+
+@socketio.on('update_monster_hp')
+def on_update_monster_hp(data):
+    room_code = data.get('room_code')
+    monster_id = data.get('monster_id')
+    hp_change = int(data.get('hp_change', 0))
+
+    if room_code not in rooms:
+        return
+
+    for m in rooms[room_code]["active_combat_list"]:
+        if m["id"] == monster_id:
+            m["hp"] = max(0, min(m["max_hp"], m["hp"] + hp_change))
+            break
+
+    broadcast_game_state(room_code)
+
+
+@socketio.on('remove_monster')
+def on_remove_monster(data):
+    room_code = data.get('room_code')
+    monster_id = data.get('monster_id')
+
+    if room_code in rooms:
+        rooms[room_code]["active_combat_list"] = [
+            m for m in rooms[room_code]["active_combat_list"] if m["id"] != monster_id
+        ]
+        broadcast_game_state(room_code)
 
 
 @socketio.on('clear_combat_events')
@@ -395,16 +415,44 @@ def on_clear_combat_events(data):
         broadcast_game_state(room_code)
 
 
+@socketio.on('dm_toggle_roll_permission')
+def on_dm_toggle_roll_permission(data):
+    """
+    DM คลิกที่การ์ดผู้เล่นเพื่อ 'เรียก' ให้คนนั้นทอยเต๋าได้ (ไฮไลต์เหลือง)
+    ถ้าห้องมีคนถูกเรียกอยู่ อย่างน้อย 1 คน -> เฉพาะคนที่ถูกเรียกเท่านั้นที่ทอยได้
+    ทอยแล้ว 1 ครั้ง จะถูกเอาออกจากรายชื่อที่ทอยได้โดยอัตโนมัติ
+    ถ้าไม่มีใครถูกเรียกเลย (รายชื่อว่าง) ทุกคนทอยได้ตามปกติ
+    """
+    sid = request.sid
+    room_code = data.get('room_code')
+    target_sid = data.get('target_sid')
+
+    if room_code not in rooms or sid != rooms[room_code]["dm_sid"]:
+        return
+    if target_sid not in rooms[room_code]["players"]:
+        return
+
+    allowed = rooms[room_code]["allowed_rollers"]
+    if target_sid in allowed:
+        allowed.discard(target_sid)
+    else:
+        allowed.add(target_sid)
+
+    broadcast_game_state(room_code)
+
+
 def broadcast_game_state(room_code):
     if room_code in rooms:
         all_players = list(rooms[room_code]["players"].values())
         combat_list = rooms[room_code]["active_combat_list"]
         game_started = rooms[room_code]["game_started"]
+        allowed_rollers = list(rooms[room_code]["allowed_rollers"])
 
         emit('game_state_update', {
             'players': all_players,
             'combat_list': combat_list,
-            'game_started': game_started
+            'game_started': game_started,
+            'allowed_rollers': allowed_rollers
         }, room=room_code)
         emit('update_player_list', {'players': all_players}, room=room_code)
 
@@ -419,20 +467,20 @@ def on_roll_dice(data):
     if room_code not in rooms:
         return
 
-    is_dm = (sid == rooms[room_code]["dm_sid"])
+    room = rooms[room_code]
+    is_dm = (sid == room["dm_sid"])
 
     if not is_dm:
-        player = rooms[room_code]["players"].get(sid)
-        if not player or not player.get("can_roll", False):
-            emit('error_msg', {'message': '🔒 รอ DM อนุญาตให้คุณทอยเต๋าก่อนนะ!'})
+        allowed = room["allowed_rollers"]
+        if allowed and sid not in allowed:
+            emit('error_msg', {'message': '⏳ ยังไม่ถึงตาคุณ รอ DM เรียกก่อนนะ!'})
             return
-        player["can_roll"] = False
-        broadcast_game_state(room_code)
+        allowed.discard(sid)
 
-    player_name = "Dungeon Master" if is_dm else rooms[room_code]["players"].get(sid, {}).get('name', 'ผู้เล่น')
+    player_name = "Dungeon Master" if is_dm else room["players"].get(sid, {}).get('name', 'ผู้เล่น')
     stat_bonus = 0
-    if not is_dm and sid in rooms[room_code]["players"]:
-        player = rooms[room_code]["players"][sid]
+    if not is_dm and sid in room["players"]:
+        player = room["players"][sid]
         stat_bonus = player["stats"].get(stat_used, 0) if stat_used != 'NONE' else 0
 
     raw_roll = random.randint(1, dice_type)
@@ -446,6 +494,9 @@ def on_roll_dice(data):
         "stat_bonus": stat_bonus,
         "total": total
     }, room=room_code)
+
+    if not is_dm:
+        broadcast_game_state(room_code)
 
 
 if __name__ == '__main__':
