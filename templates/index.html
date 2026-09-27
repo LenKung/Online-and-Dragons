@@ -224,6 +224,7 @@
             <div class="tab-buttons">
                 <button id="btn-tab-party" class="tab-btn active" onclick="playClickSound(); switchTab('party');">👥 ปาร์ตี้</button>
                 <button id="btn-tab-dm-rewards" class="tab-btn hidden" onclick="playClickSound(); switchTab('dm-rewards');" style="background: #d97706;">🎁 ของรางวัล</button>
+                <button id="btn-tab-ai" class="tab-btn hidden" onclick="playClickSound(); switchTab('ai');" style="background: #7c3aed;">🤖 AI</button>
                 <button id="btn-tab-stats" class="tab-btn" onclick="playClickSound(); switchTab('stats');">📊 สเตตัส</button>
                 <button id="btn-tab-wallet" class="tab-btn" onclick="playClickSound(); switchTab('wallet');">💰 กระเป๋าเงิน</button>
             </div>
@@ -254,6 +255,18 @@
                     <textarea id="dm-item-desc" placeholder="ความสามารถ / รายละเอียดไอเทม..." rows="3" style="margin-bottom: 6px; padding: 6px; font-size: 12px; resize: vertical;"></textarea>
                     <button onclick="playClickSound(); dmGiveItem()" style="background: #2563eb; padding: 8px; font-size: 13px;">🎁 มอบไอเทม</button>
                 </div>
+            </div>
+
+            <div id="tab-content-ai" class="tab-content hidden" style="font-size: 13px; padding: 5px;">
+                <div style="font-weight: bold; color: #a78bfa; font-size: 14px; margin-bottom: 8px;">🤖 ผู้ช่วย AI คิดเนื้อเรื่อง</div>
+                <p style="font-size: 11px; color: #888; margin-top: 0;">พิมพ์บริบทหรือสิ่งที่อยากให้ช่วยคิด เช่น "ปาร์ตี้เพิ่งเข้าไปในถ้ำมืด ช่วยแต่งฉากต่อไปหน่อย" หรือ "ช่วยแต่งบทพูดพ่อค้าในหมู่บ้าน"</p>
+                <textarea id="ai-prompt-input" rows="3" placeholder="อยากให้ AI ช่วยคิดอะไร..."></textarea>
+                <button id="btn-ai-ask" onclick="playClickSound(); dmAskAI();" style="background: #7c3aed;">✨ ให้ AI คิดให้หน่อย</button>
+
+                <div id="ai-result-box" style="background:#111827; border:1px solid #3b82f6; border-radius:8px; padding:10px; margin-top:10px; font-size:12px; white-space:pre-wrap; min-height:60px; color:#e2e8f0;">
+                    ผลลัพธ์จาก AI จะขึ้นตรงนี้...
+                </div>
+                <button id="btn-ai-send" onclick="playClickSound(); sendAIResultToChat();" disabled style="background: #10b981; margin-top: 6px;">📢 ส่งข้อความนี้เข้าแชท</button>
             </div>
 
             <div id="tab-content-stats" class="tab-content hidden" style="font-size: 13px; color: #cbd5e1; padding: 5px;">
@@ -416,7 +429,7 @@
         }
 
         function switchTab(tabName) {
-            ['party', 'dm-rewards', 'stats', 'wallet'].forEach(t => {
+            ['party', 'dm-rewards', 'ai', 'stats', 'wallet'].forEach(t => {
                 const btn = document.getElementById(`btn-tab-${t}`);
                 const content = document.getElementById(`tab-content-${t}`);
                 if (btn) btn.classList.remove('active');
@@ -1030,6 +1043,49 @@
                 </div>`;
         }
 
+        let lastAIResultText = "";
+
+        function dmAskAI() {
+            const promptInput = document.getElementById('ai-prompt-input');
+            const prompt = promptInput.value.trim();
+            if (!prompt) {
+                alert("พิมพ์สิ่งที่อยากให้ AI ช่วยคิดก่อนนะครับ!");
+                return;
+            }
+
+            const resultBox = document.getElementById('ai-result-box');
+            const btnAsk = document.getElementById('btn-ai-ask');
+            const btnSend = document.getElementById('btn-ai-send');
+
+            resultBox.innerText = "🤖 กำลังคิด...";
+            btnAsk.disabled = true;
+            btnSend.disabled = true;
+
+            socket.emit('dm_ai_generate', { room_code: currentRoomCode, prompt: prompt });
+        }
+
+        socket.on('ai_story_result', data => {
+            const resultBox = document.getElementById('ai-result-box');
+            const btnAsk = document.getElementById('btn-ai-ask');
+            const btnSend = document.getElementById('btn-ai-send');
+
+            resultBox.innerText = data.text;
+            btnAsk.disabled = false;
+
+            if (data.ok) {
+                lastAIResultText = data.text;
+                btnSend.disabled = false;
+            } else {
+                lastAIResultText = "";
+                btnSend.disabled = true;
+            }
+        });
+
+        function sendAIResultToChat() {
+            if (!lastAIResultText) return;
+            socket.emit('send_global_chat', { room_code: currentRoomCode, message: `📖 ${lastAIResultText}` });
+        }
+
         function dmGiveGold(multiplier) {
             const targetSid = document.getElementById('dm-gold-target').value;
             const amount = parseInt(document.getElementById('dm-gold-amount').value) * multiplier;
@@ -1125,6 +1181,7 @@
                 document.getElementById('game-screen').classList.add('hidden');
                 document.getElementById('dm-monster-creator').classList.remove('hidden');
                 document.getElementById('btn-tab-dm-rewards').classList.remove('hidden');
+                document.getElementById('btn-tab-ai').classList.remove('hidden');
                 document.getElementById('btn-tab-wallet').style.display = 'none';
                 document.getElementById('btn-tab-stats').style.display = 'none';
                 document.getElementById('dm-display-room-code').innerText = code;
@@ -1136,6 +1193,7 @@
                 document.getElementById('game-screen').classList.add('hidden');
                 document.getElementById('dm-monster-creator').classList.add('hidden');
                 document.getElementById('btn-tab-dm-rewards').classList.add('hidden');
+                document.getElementById('btn-tab-ai').classList.add('hidden');
                 document.getElementById('btn-tab-wallet').style.display = 'inline-block';
                 document.getElementById('btn-tab-stats').style.display = 'inline-block';
                 document.getElementById('display-room-code').innerText = code;
