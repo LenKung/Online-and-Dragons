@@ -1,10 +1,6 @@
-import eventlet
-eventlet.monkey_patch()  # ต้องอยู่บนสุดของไฟล์ ก่อน import อื่น ๆ เพื่อให้ requests/network เรียก AI แบบไม่บล็อกคนอื่นในห้อง
-
 import os
 import random
 import string
-import requests
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit, join_room, leave_room
 
@@ -20,18 +16,6 @@ BASE_HP = 100
 HP_PER_POINT = 5
 POINTS_PER_LEVEL = 5
 SKILL_CHANGE_COST = 10
-
-# ตั้งค่า API key ของ Anthropic (Claude) ผ่าน environment variable บนเซิร์ฟเวอร์ที่ deploy จริง
-# ห้าม hardcode key ลงในโค้ดเด็ดขาด
-ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
-ANTHROPIC_MODEL = os.environ.get('ANTHROPIC_MODEL', 'claude-sonnet-5')
-AI_SYSTEM_PROMPT = (
-    "คุณคือผู้ช่วย Dungeon Master สำหรับเกม D&D ที่เล่นกันเป็นภาษาไทย "
-    "หน้าที่ของคุณคือช่วย DM คิดเนื้อเรื่อง บทบรรยายฉาก บทพูด NPC "
-    "หรือไอเดียการต่อเรื่อง ตามสิ่งที่ DM ขอมา "
-    "เขียนให้กระชับ อ่านสนุก เป็นภาษาไทยธรรมชาติ ความยาวพอเหมาะสำหรับ DM เอาไปเล่าต่อในเกมได้ทันที "
-    "ไม่ต้องมีคำนำหรือคำลงท้าย ตอบเนื้อหาที่ขอมาโดยตรง"
-)
 
 
 def generate_room_code():
@@ -466,67 +450,6 @@ def on_dm_toggle_roll_permission(data):
         allowed.add(target_sid)
 
     broadcast_game_state(room_code)
-
-
-@socketio.on('dm_ai_generate')
-def on_dm_ai_generate(data):
-    """
-    DM ขอให้ AI (Claude) ช่วยคิดเนื้อเรื่อง/บทบรรยาย/บทพูด NPC
-    ผลลัพธ์จะส่งกลับไปหา DM คนเดียวก่อน (ยังไม่เข้าแชท) ให้ DM เลือกกดส่งเข้าแชทเองอีกที
-    """
-    sid = request.sid
-    room_code = data.get('room_code')
-    prompt = data.get('prompt', '').strip()
-
-    if room_code not in rooms or sid != rooms[room_code]["dm_sid"]:
-        return
-    if not prompt:
-        emit('ai_story_result', {'text': '⚠️ พิมพ์สิ่งที่อยากให้ AI ช่วยคิดก่อนนะครับ', 'ok': False})
-        return
-    if not ANTHROPIC_API_KEY:
-        emit('ai_story_result', {
-            'text': '⚠️ เซิร์ฟเวอร์ยังไม่ได้ตั้งค่า ANTHROPIC_API_KEY (ดูวิธีตั้งค่าใน README)',
-            'ok': False
-        })
-        return
-
-    # สรุปบริบทปาร์ตี้สั้น ๆ ให้ AI ใช้ประกอบการแต่งเรื่อง
-    players = rooms[room_code]["players"].values()
-    if players:
-        party_context = ", ".join(
-            f"{p['name']} ({p['char_class']}, Lv.{p['level']}, HP {p['hp']}/{p['max_hp']})" for p in players
-        )
-    else:
-        party_context = "ยังไม่มีผู้เล่นสร้างตัวละคร"
-
-    user_message = f"บริบทปาร์ตี้ตอนนี้: {party_context}\n\nสิ่งที่ DM อยากให้ช่วยคิด: {prompt}"
-
-    try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json={
-                "model": ANTHROPIC_MODEL,
-                "max_tokens": 600,
-                "system": AI_SYSTEM_PROMPT,
-                "messages": [{"role": "user", "content": user_message}]
-            },
-            timeout=25
-        )
-        resp.raise_for_status()
-        result = resp.json()
-        text = "".join(
-            block.get("text", "") for block in result.get("content", []) if block.get("type") == "text"
-        ).strip()
-        if not text:
-            text = "⚠️ AI ไม่ได้ตอบข้อความกลับมา ลองใหม่อีกครั้ง"
-        emit('ai_story_result', {'text': text, 'ok': True})
-    except requests.exceptions.RequestException as e:
-        emit('ai_story_result', {'text': f'⚠️ เรียก AI ไม่สำเร็จ: {e}', 'ok': False})
 
 
 def broadcast_game_state(room_code):
