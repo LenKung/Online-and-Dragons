@@ -1,4 +1,5 @@
-Flask
-Flask-SocketIO
-gunicorn==20.1.0
-gevent
+flask
+flask-socketio
+eventlet
+gunicorn
+requests
