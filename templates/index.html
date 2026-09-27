@@ -345,6 +345,802 @@
     </div>
 
     <script>
+        const socket = io();
+        let currentRoomCode = "";
+        let isUserDM = false;
+        let remainingPoints = 5;
+        let currentAvatarBase64 = "";
+        let monsterAvatarBase64 = "";
+        let myCurrentCharacterData = null;
+        let allPartyPlayers = [];
+        let allowedRollers = [];
+        const defaultCssAvatar = `<div class="default-avatar-css"></div>`;
+        const stats = { STR: 0, DEX: 0, INT: 0, CHA: 0 };
+        const MAX_CHAT_MESSAGES = 60;
+        const MAX_LOG_ENTRIES = 60;
+        const SKILL_CHANGE_COST = 10;
+
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        function playClickSound() {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(400, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.05);
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.05);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.05);
+        }
+
+        function playDiceSound() {
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            for (let i = 0; i < 4; i++) {
+                setTimeout(() => {
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(200 + Math.random() * 400, audioCtx.currentTime);
+                    gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+                    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
+                    osc.connect(gain);
+                    gain.connect(audioCtx.destination);
+                    osc.start();
+                    osc.stop(audioCtx.currentTime + 0.08);
+                }, i * 100);
+            }
+        }
+
+        const container = document.getElementById('stats-container');
+        Object.keys(stats).forEach(stat => {
+            container.innerHTML += `
+                <div class="stat-row">
+                    <span><b>${stat}:</b> <span id="val-${stat}">0</span></span>
+                    <div>
+                        <button class="stat-btn" onclick="playClickSound(); changeStat('${stat}', -1)">-</button>
+                        <button class="stat-btn" onclick="playClickSound(); changeStat('${stat}', 1)">+</button>
+                    </div>
+                </div>`;
+        });
+
+        // จำกัดจำนวนข้อความ/แถวบันทึกใน DOM ไม่ให้บวมไม่จำกัด
+        // (สาเหตุหลักของอาการ "เอาเมาส์คลุมข้อความแล้วหน้าจอค้าง" คือ DOM โตไม่มีเพดานเมื่อเล่นไปนาน ๆ)
+        function trimOldNodes(container, maxCount) {
+            while (container.children.length > maxCount) {
+                container.removeChild(container.firstChild);
+            }
+        }
+
+        function switchTab(tabName) {
+            ['party', 'dm-rewards', 'stats', 'wallet'].forEach(t => {
+                const btn = document.getElementById(`btn-tab-${t}`);
+                const content = document.getElementById(`tab-content-${t}`);
+                if (btn) btn.classList.remove('active');
+                if (content) content.classList.add('hidden');
+            });
+            const activeBtn = document.getElementById(`btn-tab-${tabName}`);
+            const activeContent = document.getElementById(`tab-content-${tabName}`);
+            if (activeBtn) activeBtn.classList.add('active');
+            if (activeContent) activeContent.classList.remove('hidden');
+        }
+
+        function createRoom() { socket.emit('create_room'); }
+        function joinRoom() {
+            const code = document.getElementById('input-room-code').value.trim();
+            if (code) socket.emit('join_room', { room_code: code });
+        }
+
+        function leaveRoom() {
+            socket.emit('leave_room_event', { room_code: currentRoomCode });
+            document.getElementById('char-screen').classList.add('hidden');
+            document.getElementById('dm-lobby-screen').classList.add('hidden');
+            document.getElementById('player-waiting-screen').classList.add('hidden');
+            document.getElementById('game-screen').classList.add('hidden');
+            document.getElementById('lobby-screen').classList.remove('hidden');
+            resetStats();
+        }
+
+        function resetStats() {
+            remainingPoints = 5;
+            currentAvatarBase64 = "";
+            document.getElementById('avatar-preview-box').innerHTML = defaultCssAvatar;
+            document.getElementById('char-avatar-input').value = "";
+            Object.keys(stats).forEach(s => stats[s] = 0);
+            updateStatsUI();
+            document.getElementById('char-name').value = "";
+            document.getElementById('char-class').value = "";
+            for(let i=1; i<=4; i++) document.getElementById(`skill-${i}`).value = "";
+        }
+
+        function resizeImageToBase64(file, callback) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    const maxSize = 200;
+                    let width = img.width;
+                    let height = img.height;
+
+                    if (width > height) {
+                        if (width > maxSize) { height *= maxSize / width; width = maxSize; }
+                    } else {
+                        if (height > maxSize) { width *= maxSize / height; height = maxSize; }
+                    }
+
+                    canvas.width = width;
+                    canvas.height = height;
+                    ctx.drawImage(img, 0, 0, width, height);
+                    callback(canvas.toDataURL('image/jpeg', 0.8));
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function previewImage(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            resizeImageToBase64(file, (base64) => {
+                currentAvatarBase64 = base64;
+                document.getElementById('avatar-preview-box').innerHTML = `<img src="${base64}" alt="Avatar">`;
+            });
+        }
+
+        function previewMonsterImage(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            resizeImageToBase64(file, (base64) => {
+                monsterAvatarBase64 = base64;
+                document.getElementById('monster-avatar-preview-box').innerHTML = `<img src="${base64}" alt="Monster">`;
+            });
+        }
+
+        function changeStat(statName, amount) {
+            if (amount > 0 && remainingPoints > 0) {
+                stats[statName]++; remainingPoints--;
+            } else if (amount < 0 && stats[statName] > 0) {
+                stats[statName]--; remainingPoints++;
+            }
+            updateStatsUI();
+        }
+
+        function updateStatsUI() {
+            Object.keys(stats).forEach(s => document.getElementById(`val-${s}`).innerText = stats[s]);
+            document.getElementById('points-left').innerText = remainingPoints;
+        }
+
+        function submitCharacter() {
+            const name = document.getElementById('char-name').value.trim();
+            if (!name) {
+                alert("กรุณากรอกชื่อตัวละครด้วยครับ!");
+                return;
+            }
+
+            let charClass = document.getElementById('char-class').value.trim() || "นักผจญภัย";
+            const skills = [
+                document.getElementById('skill-1').value.trim(),
+                document.getElementById('skill-2').value.trim(),
+                document.getElementById('skill-3').value.trim(),
+                document.getElementById('skill-4').value.trim()
+            ].filter(s => s !== "");
+
+            myCurrentCharacterData = {
+                name: name,
+                char_class: charClass,
+                stats: stats,
+                avatar: currentAvatarBase64,
+                skills: skills
+            };
+
+            socket.emit('submit_character', {
+                room_code: currentRoomCode,
+                ...myCurrentCharacterData
+            });
+
+            document.getElementById('char-screen').classList.add('hidden');
+            document.getElementById('player-waiting-screen').classList.remove('hidden');
+
+            document.getElementById('ready-avatar-preview').innerHTML = currentAvatarBase64 ? `<img src="${currentAvatarBase64}">` : defaultCssAvatar;
+            document.getElementById('ready-char-name').innerText = name;
+            document.getElementById('ready-char-class').innerText = charClass;
+        }
+
+        function backToEditChar() {
+            document.getElementById('player-waiting-screen').classList.add('hidden');
+            document.getElementById('char-screen').classList.remove('hidden');
+        }
+
+        function startGame() {
+            socket.emit('start_game', { room_code: currentRoomCode });
+        }
+
+        function sendGlobalChat() {
+            const input = document.getElementById('global-chat-input');
+            const msg = input.value.trim();
+            if (msg) {
+                socket.emit('send_global_chat', { room_code: currentRoomCode, message: msg });
+                input.value = "";
+            }
+        }
+
+        function handleChatKeyPress(event) {
+            if (event.key === 'Enter') {
+                playClickSound();
+                sendGlobalChat();
+            }
+        }
+
+        socket.on('receive_global_chat', data => {
+            const chatBox = document.getElementById('global-chat-box');
+            const div = document.createElement('div');
+            div.className = data.is_dm ? 'chat-msg dm-chat' : 'chat-msg';
+            div.innerHTML = `<div class="sender">${data.sender}</div><div>${data.message}</div>`;
+            chatBox.appendChild(div);
+            trimOldNodes(chatBox, MAX_CHAT_MESSAGES);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        });
+
+        function rollDice() {
+            const isRestricted = allowedRollers.length > 0;
+            if (!isUserDM && isRestricted && !allowedRollers.includes(socket.id)) {
+                return; // ปุ่มถูกปิดอยู่แล้ว กันไว้อีกชั้น
+            }
+
+            const diceCube = document.getElementById('dice-cube');
+            diceCube.classList.remove('rolling');
+            void diceCube.offsetWidth;
+            diceCube.classList.add('rolling');
+
+            const diceType = parseInt(document.getElementById('select-dice').value);
+            const statUsed = isUserDM ? 'NONE' : document.getElementById('select-stat').value;
+            socket.emit('roll_dice', { room_code: currentRoomCode, dice_type: diceType, stat_used: statUsed });
+        }
+
+        socket.on('dice_rolled_event', data => {
+            const logBox = document.getElementById('dice-log-box');
+            let statText = data.stat_used !== 'NONE' ? ` (+${data.stat_bonus} ${data.stat_used})` : '';
+
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = `<b>${data.player_name}</b> ทอย d${data.dice_type}: <span style="color:#f59e0b;font-weight:bold">${data.raw_roll}</span>${statText} 👉 รวม = <b>${data.total}</b>`;
+            logBox.appendChild(entry);
+            trimOldNodes(logBox, MAX_LOG_ENTRIES);
+            logBox.scrollTop = logBox.scrollHeight;
+
+            const chatBox = document.getElementById('global-chat-box');
+            const chatDiv = document.createElement('div');
+            chatDiv.className = 'chat-msg dice-result-msg';
+            chatDiv.innerHTML = `<div class="sender">🎲 ผลการทอยเต๋าจาก ${data.player_name}</div><div>ทอย <b>d${data.dice_type}</b> ได้ <span style="color:#f59e0b;font-weight:bold">${data.raw_roll}</span>${statText} 👉 <b>รวมแต้มทั้งหมด = ${data.total}</b></div>`;
+            chatBox.appendChild(chatDiv);
+            trimOldNodes(chatBox, MAX_CHAT_MESSAGES);
+            chatBox.scrollTop = chatBox.scrollHeight;
+        });
+
+        socket.on('room_created', data => {
+            isUserDM = true;
+            enterRoom(data.room_code);
+        });
+
+        socket.on('room_joined', data => {
+            isUserDM = data.is_dm;
+            enterRoom(data.room_code);
+        });
+
+        socket.on('error_msg', data => alert(data.message));
+        socket.on('room_closed', () => {
+            alert("ห้องถูกปิดโดย DM");
+            location.reload();
+        });
+
+        socket.on('update_player_list', data => {
+            const dmWaitingList = document.getElementById('dm-waiting-player-list');
+            const dmPlayerCount = document.getElementById('dm-player-count');
+
+            if (dmWaitingList && isUserDM) {
+                dmPlayerCount.innerText = data.players.length;
+                if (data.players.length === 0) {
+                    dmWaitingList.innerHTML = `<p style="color: #666; font-style: italic;">กำลังรอผู้เล่นสร้างตัวละคร...</p>`;
+                } else {
+                    dmWaitingList.innerHTML = "";
+                    data.players.forEach(p => {
+                        const avatarHtml = p.avatar ? `<img src="${p.avatar}">` : defaultCssAvatar;
+                        dmWaitingList.innerHTML += `
+                            <div class="player-item">
+                                <div class="player-avatar-box">${avatarHtml}</div>
+                                <div class="player-info">
+                                    <b>• ${p.name}</b> (${p.char_class})<br>
+                                    <small style="color:#aaa">STR:${p.stats.STR} | DEX:${p.stats.DEX} | INT:${p.stats.INT} | CHA:${p.stats.CHA}</small>
+                                </div>
+                            </div>`;
+                    });
+                }
+            }
+        });
+
+        function skillsToDisplayArray(skills) {
+            // รองรับทั้งข้อมูลเก่า (array ของ string) และใหม่ (array ของ {name, desc})
+            if (!skills) return [];
+            return skills.map(s => (typeof s === 'string') ? { name: s, desc: '' } : s);
+        }
+
+        socket.on('game_state_update', data => {
+            allPartyPlayers = data.players;
+            allowedRollers = data.allowed_rollers || [];
+
+            updateRollButtonState();
+
+            if (isUserDM) {
+                const btnStart = document.getElementById('btn-start-game');
+                if (data.players && data.players.length > 0) {
+                    btnStart.disabled = false;
+                    btnStart.innerText = "🚀 เริ่มเกมเลย!";
+                } else {
+                    btnStart.disabled = true;
+                    btnStart.innerText = "🚀 เริ่มเกมเลย! (รอผู้เล่นสร้างตัวละคร...)";
+                }
+
+                const dmGoldTarget = document.getElementById('dm-gold-target');
+                const dmItemTarget = document.getElementById('dm-item-target');
+                if (dmGoldTarget && dmItemTarget) {
+                    let playerOptions = `<option value="ALL">✨ ผู้เล่นทุกคนในปาร์ตี้</option>`;
+                    data.players.forEach(p => {
+                        playerOptions += `<option value="${p.sid}">🛡️ ${p.name} (${p.char_class})</option>`;
+                    });
+                    dmGoldTarget.innerHTML = playerOptions;
+                    dmItemTarget.innerHTML = playerOptions;
+                }
+            }
+
+            if (data.game_started) {
+                document.getElementById('lobby-screen').classList.add('hidden');
+                document.getElementById('dm-lobby-screen').classList.add('hidden');
+                document.getElementById('char-screen').classList.add('hidden');
+                document.getElementById('player-waiting-screen').classList.add('hidden');
+                document.getElementById('game-screen').classList.remove('hidden');
+
+                renderPartyList(data.players);
+
+                data.players.forEach(p => {
+                    if (!isUserDM && p.sid === socket.id) {
+                        myCurrentCharacterData = p;
+                        renderMyStats();
+                        renderMyWallet();
+                    }
+                });
+
+                if (!isUserDM) {
+                    renderMyWallet();
+                }
+
+                renderCombatZone(data.combat_list || []);
+            }
+        });
+
+        function updateRollButtonState() {
+            const btnRoll = document.getElementById('btn-roll-dice');
+            const waitNote = document.getElementById('roll-wait-note');
+            if (!btnRoll) return;
+
+            const isRestricted = allowedRollers.length > 0;
+            const iCanRoll = isUserDM || !isRestricted || allowedRollers.includes(socket.id);
+
+            btnRoll.disabled = !iCanRoll;
+            waitNote.classList.toggle('hidden', iCanRoll);
+        }
+
+        function renderPartyList(players) {
+            const gameListDiv = document.getElementById('game-player-list');
+            gameListDiv.innerHTML = "";
+
+            players.forEach(p => {
+                const avatarHtml = p.avatar ? `<img src="${p.avatar}">` : defaultCssAvatar;
+                const isDead = p.hp <= 0;
+                const hpPercent = (p.hp / p.max_hp) * 100;
+                const skills = skillsToDisplayArray(p.skills);
+                const skillsHtml = skills.length > 0
+                    ? skills.map(s => `<div class="skill-line"><b>✨ ${s.name || '-'}</b>${s.desc ? `<div class="skill-desc">${s.desc}</div>` : ''}</div>`).join('')
+                    : '<div style="color:#666;">ไม่มีสกิล</div>';
+
+                const isAllowed = allowedRollers.includes(p.sid);
+
+                let dmControlsHtml = '';
+                if (isUserDM) {
+                    let skillEditHtml = skills.map((s, idx) => `
+                        <div style="margin-top:4px;">
+                            <div style="font-size:10px; color:#93c5fd;">✏️ แก้คำอธิบาย: ${s.name || '(ว่าง)'}</div>
+                            <textarea id="dm-skill-desc-${p.sid}-${idx}" rows="2" style="font-size:11px; padding:5px; margin:2px 0;">${s.desc || ''}</textarea>
+                            <button onclick="dmSaveSkillDesc('${p.sid}', ${idx})" style="background:#2563eb; padding:4px; font-size:10px; margin:0;">บันทึกคำอธิบาย</button>
+                        </div>`).join('');
+
+                    dmControlsHtml = `
+                        <div class="dm-controls-box">
+                            <div style="font-size:11px; color:#f87171; font-weight:bold; margin-bottom:4px;">⚙️ จัดการผู้เล่น (${p.name})</div>
+
+                            <button class="dm-call-btn ${isAllowed ? 'active' : ''}" onclick="playClickSound(); toggleRollCall('${p.sid}')">
+                                ${isAllowed ? '🟡 ถูกเรียกอยู่ (กดยกเลิก)' : '🎯 เรียกให้ทอยเต๋า'}
+                            </button>
+
+                            <div class="dm-hp-controls" style="display:flex; gap:2px; margin-top:6px;">
+                                <button onclick="updatePlayerProperty('${p.sid}', 'hp', -5)" style="background:#dc2626; padding:2px; font-size:10px;">-5 HP</button>
+                                <button onclick="updatePlayerProperty('${p.sid}', 'hp', -1)" style="background:#991b1b; padding:2px; font-size:10px;">-1</button>
+                                <button onclick="updatePlayerProperty('${p.sid}', 'hp', 1)" style="background:#065f46; padding:2px; font-size:10px;">+1</button>
+                                <button onclick="updatePlayerProperty('${p.sid}', 'hp', 5)" style="background:#059669; padding:2px; font-size:10px;">+5 HP</button>
+                            </div>
+                            <div class="hp-custom-row">
+                                <input type="number" id="custom-hp-${p.sid}" placeholder="จำนวน HP" inputmode="numeric">
+                                <button onclick="applyCustomHp('${p.sid}', 1)" style="background:#059669;">+ ปรับ</button>
+                                <button onclick="applyCustomHp('${p.sid}', -1)" style="background:#dc2626;">- ปรับ</button>
+                            </div>
+
+                            <div style="display:flex; gap:4px; margin-top:6px;">
+                                <button onclick="updatePlayerProperty('${p.sid}', 'gold', 50)" style="background:#d97706; padding:2px; font-size:10px;">+50 G</button>
+                                <button onclick="updatePlayerProperty('${p.sid}', 'gold', -50)" style="background:#b45309; padding:2px; font-size:10px;">-50 G</button>
+                                <button onclick="updatePlayerProperty('${p.sid}', 'level', 1)" style="background:#2563eb; padding:2px; font-size:10px;">+1 LVL</button>
+                            </div>
+
+                            ${skillEditHtml}
+                        </div>`;
+                }
+
+                gameListDiv.innerHTML += `
+                    <div class="party-card ${isAllowed ? 'roll-allowed' : ''}">
+                        <div class="party-header">
+                            <div class="player-avatar-box ${isDead ? 'is-defeated' : ''}">${avatarHtml}</div>
+                            <div>
+                                <div class="party-name">🛡️ ${p.name} <span style="color:#eab308; font-size:11px;">(Lv.${p.level})</span>${isDead ? '<span class="is-defeated-tag">หมดสติ</span>' : ''}</div>
+                                <div class="party-class">${p.char_class} | 💰 ${p.gold} G</div>
+                            </div>
+                        </div>
+                        <div class="hp-bar-container">
+                            <div class="hp-bar-fill ${isDead ? 'zero' : ''}" style="width: ${hpPercent}%;"></div>
+                            <span class="hp-text">HP ${p.hp} / ${p.max_hp}</span>
+                        </div>
+                        <div class="party-stats">
+                            <span>STR <b>${p.stats.STR}</b></span>
+                            <span>DEX <b>${p.stats.DEX}</b></span>
+                            <span>INT <b>${p.stats.INT}</b></span>
+                            <span>CHA <b>${p.stats.CHA}</b></span>
+                        </div>
+                        <div class="party-skills-box">
+                            ${skillsHtml}
+                        </div>
+                        ${dmControlsHtml}
+                    </div>`;
+            });
+        }
+
+        function toggleRollCall(targetSid) {
+            socket.emit('dm_toggle_roll_permission', { room_code: currentRoomCode, target_sid: targetSid });
+        }
+
+        function applyCustomHp(targetSid, sign) {
+            const input = document.getElementById(`custom-hp-${targetSid}`);
+            const amount = parseInt(input.value);
+            if (isNaN(amount) || amount === 0) return;
+            socket.emit('update_player_hp', { room_code: currentRoomCode, target_sid: targetSid, hp_change: amount * sign });
+            input.value = "";
+        }
+
+        function dmSaveSkillDesc(targetSid, skillIndex) {
+            const textarea = document.getElementById(`dm-skill-desc-${targetSid}-${skillIndex}`);
+            socket.emit('dm_edit_skill_desc', {
+                room_code: currentRoomCode,
+                target_sid: targetSid,
+                skill_index: skillIndex,
+                desc: textarea.value.trim()
+            });
+        }
+
+        function renderCombatZone(combatList) {
+            const zoneBox = document.getElementById('combat-zone-box');
+            const combatContainer = document.getElementById('active-combat-container');
+
+            if (!combatList || combatList.length === 0) {
+                zoneBox.classList.add('hidden');
+                combatContainer.innerHTML = "";
+                return;
+            }
+
+            zoneBox.classList.remove('hidden');
+            let combatHtml = "";
+            combatList.forEach(m => {
+                const isDead = m.hp <= 0;
+                const hpPercent = (m.hp / m.max_hp) * 100;
+                const monsterAvatar = m.avatar ? `<img src="${m.avatar}">` : `<div class="default-avatar-css"></div>`;
+
+                let dmMonsterControls = '';
+                if (isUserDM) {
+                    dmMonsterControls = `
+                        <div class="monster-dm-row">
+                            <input type="number" id="custom-monster-hp-${m.id}" placeholder="HP" inputmode="numeric">
+                            <button onclick="applyCustomMonsterHp('${m.id}', 1)" style="background:#059669; padding:6px;">+ ปรับ</button>
+                            <button onclick="applyCustomMonsterHp('${m.id}', -1)" style="background:#dc2626; padding:6px;">- ปรับ</button>
+                            <button onclick="removeMonster('${m.id}')" style="background:#4b5563; padding:6px;">🗑️ ลบ</button>
+                        </div>`;
+                }
+
+                combatHtml += `
+                    <div class="combat-banner">
+                        <div class="combat-avatar ${isDead ? 'is-defeated' : ''}">${monsterAvatar}</div>
+                        <div class="combat-info">
+                            <div style="font-weight:bold; color:#ef4444; font-size:15px;">⚔️ ${m.name}${isDead ? '<span class="is-defeated-tag">พ่ายแพ้</span>' : ''}</div>
+                            <div style="font-size:11px; color:#ccc;">พลังโจมตี (ATK): ${m.attack}</div>
+                            <div class="hp-bar-container" style="margin-top:4px;">
+                                <div class="hp-bar-fill ${isDead ? 'zero' : ''}" style="width: ${hpPercent}%;"></div>
+                                <span class="hp-text">HP ${m.hp} / ${m.max_hp}</span>
+                            </div>
+                            ${dmMonsterControls}
+                        </div>
+                    </div>`;
+            });
+            combatContainer.innerHTML = combatHtml;
+        }
+
+        function applyCustomMonsterHp(monsterId, sign) {
+            const input = document.getElementById(`custom-monster-hp-${monsterId}`);
+            const amount = parseInt(input.value);
+            if (isNaN(amount) || amount === 0) return;
+            socket.emit('update_monster_hp', { room_code: currentRoomCode, monster_id: monsterId, hp_change: amount * sign });
+            input.value = "";
+        }
+
+        function removeMonster(monsterId) {
+            socket.emit('remove_monster', { room_code: currentRoomCode, monster_id: monsterId });
+        }
+
+        function renderMyStats() {
+            if (!myCurrentCharacterData) return;
+            const p = myCurrentCharacterData;
+            const myStatsDiv = document.getElementById('my-character-sheet');
+            const avatarHtml = p.avatar ? `<img src="${p.avatar}">` : defaultCssAvatar;
+            const isDead = p.hp <= 0;
+            const hpPercent = (p.hp / p.max_hp) * 100;
+            const points = p.unspent_points || 0;
+            const skills = skillsToDisplayArray(p.skills);
+
+            const itemsHtml = p.items && p.items.length > 0
+                ? p.items.map((item, index) => `
+                    <div class="item-card" style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+                        <div>
+                            <div style="font-weight:bold; color:#f6e05e;">🗡️ ${item.name}</div>
+                            <div style="font-size:11px; color:#cbd5e1; margin-top:2px;">${item.desc || 'ไม่มีคำอธิบายความสามารถ'}</div>
+                        </div>
+                        <button onclick="playClickSound(); useItem(${index});" style="background: #10b981; width: auto; padding: 6px 12px; font-size: 11px; margin: 0; flex-shrink: 0;">✨ กดใช้</button>
+                    </div>`).join('')
+                : '<div style="font-size:11px; color:#888;">ยังไม่มีไอเทมในกระเป๋า</div>';
+
+            const statPlusRows = ['STR', 'DEX', 'INT', 'CHA'].map(s => `
+                <div class="stat-plus-row">
+                    <span>${s} <b>${p.stats[s]}</b></span>
+                    <button class="stat-plus-btn" ${points < 1 ? 'disabled' : ''} onclick="spendPoint('${s}')">+</button>
+                </div>`).join('');
+
+            const hpPlusRow = `
+                <div class="stat-plus-row">
+                    <span>Max HP <b>${p.max_hp}</b> (+5/แต้ม)</span>
+                    <button class="stat-plus-btn" ${points < 1 ? 'disabled' : ''} onclick="spendPoint('HP')">+</button>
+                </div>`;
+
+            const skillsHtml = skills.map((s, idx) => `
+                <div class="skill-line">
+                    <b>✨ ${s.name || '(ยังไม่ได้ตั้งชื่อ)'}</b>
+                    ${s.desc ? `<div class="skill-desc">${s.desc}</div>` : '<div class="skill-desc">ยังไม่มีคำอธิบาย (DM เป็นคนใส่ให้)</div>'}
+                    <button class="skill-change-btn" ${points < SKILL_CHANGE_COST ? 'disabled' : ''} onclick="toggleSkillEditBox(${idx})">
+                        🔄 เปลี่ยนท่านี้ (ใช้ ${SKILL_CHANGE_COST} แต้ม)
+                    </button>
+                    <div id="skill-edit-box-${idx}" class="skill-edit-box hidden">
+                        <input type="text" id="skill-new-name-${idx}" placeholder="ชื่อท่าใหม่...">
+                        <textarea id="skill-new-desc-${idx}" rows="2" placeholder="อธิบายท่านี้..."></textarea>
+                        <button onclick="confirmChangeSkill(${idx})" style="background:#7c3aed; margin:0; padding:6px; font-size:11px;">✅ ยืนยันเปลี่ยนท่า</button>
+                    </div>
+                </div>`).join('');
+
+            myStatsDiv.innerHTML = `
+                <div class="party-card" style="border-color: #f59e0b;">
+                    <div class="party-header">
+                        <div class="player-avatar-box ${isDead ? 'is-defeated' : ''}">${avatarHtml}</div>
+                        <div>
+                            <div class="party-name">🛡️ ${p.name} <span style="color:#eab308;">(Lv.${p.level})</span></div>
+                            <div class="party-class">${p.char_class} | 💰 ${p.gold} G</div>
+                        </div>
+                    </div>
+                    <div class="hp-bar-container">
+                        <div class="hp-bar-fill ${isDead ? 'zero' : ''}" style="width: ${hpPercent}%;"></div>
+                        <span class="hp-text">HP ${p.hp} / ${p.max_hp}</span>
+                    </div>
+
+                    <div style="text-align:center; margin: 8px 0;">
+                        <span class="points-badge">✨ แต้มสเตตัสคงเหลือ: ${points} (ทุก 5 เลเวลได้ 5 แต้ม)</span>
+                    </div>
+
+                    <div class="party-skills-box" style="background:#111827;">
+                        <div style="margin-bottom:6px; color:#60a5fa; font-weight:bold;">📈 อัปสเตตัส</div>
+                        ${statPlusRows}
+                        ${hpPlusRow}
+                    </div>
+
+                    <div class="party-skills-box" style="margin-top:8px;">
+                        <div style="margin-bottom:4px; color:#a78bfa; font-weight:bold;">✨ สกิลของคุณ:</div>
+                        ${skillsHtml}
+                    </div>
+
+                    <div class="party-skills-box" style="margin-top:8px; background:#111827;">
+                        <div style="margin-bottom:4px; color:#60a5fa;"><b>🎒 กระเป๋าไอเทม:</b></div>
+                        ${itemsHtml}
+                    </div>
+                </div>`;
+        }
+
+        function spendPoint(stat) {
+            playClickSound();
+            socket.emit('spend_stat_point', { room_code: currentRoomCode, stat: stat });
+        }
+
+        function toggleSkillEditBox(idx) {
+            const box = document.getElementById(`skill-edit-box-${idx}`);
+            box.classList.toggle('hidden');
+        }
+
+        function confirmChangeSkill(idx) {
+            const name = document.getElementById(`skill-new-name-${idx}`).value.trim();
+            const desc = document.getElementById(`skill-new-desc-${idx}`).value.trim();
+            if (!name) {
+                alert("กรุณาตั้งชื่อท่าใหม่ด้วยครับ!");
+                return;
+            }
+            socket.emit('change_skill', { room_code: currentRoomCode, skill_index: idx, name: name, desc: desc });
+        }
+
+        function useItem(index) {
+            if (confirm("คุณต้องการกดใช้ไอเทมชิ้นนี้ใช่หรือไม่? (ไอเทมจะหายไปหลังกดใช้)")) {
+                socket.emit('use_item', {
+                    room_code: currentRoomCode,
+                    item_index: index
+                });
+            }
+        }
+
+        function renderMyWallet() {
+            if (!myCurrentCharacterData) return;
+            const walletDiv = document.getElementById('my-wallet-panel');
+
+            const otherPlayers = allPartyPlayers.filter(p => p.sid !== socket.id);
+            let optionsHtml = otherPlayers.map(p => `<option value="${p.sid}">${p.name} (${p.char_class})</option>`).join('');
+
+            walletDiv.innerHTML = `
+                <div class="wallet-box">
+                    <div style="font-size: 13px; color: #aaa;">เงินในกระเป๋าของคุณ</div>
+                    <div style="font-size: 22px; font-weight: bold; color: #facc15; margin-top: 4px;">💰 ${myCurrentCharacterData.gold} G</div>
+                </div>
+                <div class="transfer-box">
+                    <div style="font-weight: bold; color: #60a5fa; font-size: 13px; margin-bottom: 6px;">💸 โอนเงินให้ผู้อื่น</div>
+                    <label style="font-size: 11px; color: #aaa;">เลือกผู้รับ:</label>
+                    <select id="transfer-target" style="margin-bottom: 6px;">
+                        ${optionsHtml || '<option value="">ไม่มีผู้เล่นอื่นในห้อง</option>'}
+                    </select>
+                    <label style="font-size: 11px; color: #aaa;">จำนวนเงิน (G):</label>
+                    <input type="number" id="transfer-amount" placeholder="ระบุจำนวนเงิน..." value="10" min="1" style="margin-bottom: 8px;">
+                    <button onclick="playClickSound(); sendGoldTransfer();" style="background: #10b981; padding: 8px; font-size: 13px;">📤 ยืนยันการโอนเงิน</button>
+                </div>`;
+        }
+
+        function dmGiveGold(multiplier) {
+            const targetSid = document.getElementById('dm-gold-target').value;
+            const amount = parseInt(document.getElementById('dm-gold-amount').value) * multiplier;
+            if (isNaN(amount) || amount === 0) return;
+
+            socket.emit('update_player_gold', {
+                room_code: currentRoomCode,
+                target_sid: targetSid,
+                gold_change: amount
+            });
+        }
+
+        function dmGiveItem() {
+            const targetSid = document.getElementById('dm-item-target').value;
+            const name = document.getElementById('dm-item-name').value.trim();
+            const desc = document.getElementById('dm-item-desc').value.trim();
+
+            if (!name) {
+                alert("กรุณากรอกชื่อไอเทมด้วยครับ!");
+                return;
+            }
+
+            socket.emit('give_item', {
+                room_code: currentRoomCode,
+                target_sid: targetSid,
+                name: name,
+                description: desc
+            });
+
+            document.getElementById('dm-item-name').value = "";
+            document.getElementById('dm-item-desc').value = "";
+        }
+
+        function sendGoldTransfer() {
+            const receiverSid = document.getElementById('transfer-target').value;
+            const amount = parseInt(document.getElementById('transfer-amount').value);
+            if (!receiverSid) {
+                alert("กรุณาเลือกผู้รับเงิน!");
+                return;
+            }
+            if (!amount || amount <= 0) {
+                alert("กรุณาระบุจำนวนเงินให้ถูกต้อง!");
+                return;
+            }
+            socket.emit('transfer_gold', {
+                room_code: currentRoomCode,
+                receiver_sid: receiverSid,
+                amount: amount
+            });
+        }
+
+        function updatePlayerProperty(targetSid, prop, val) {
+            if (prop === 'hp') {
+                socket.emit('update_player_hp', { room_code: currentRoomCode, target_sid: targetSid, hp_change: val });
+            } else if (prop === 'gold') {
+                socket.emit('update_player_gold', { room_code: currentRoomCode, target_sid: targetSid, gold_change: val });
+            } else if (prop === 'level') {
+                socket.emit('update_player_level', { room_code: currentRoomCode, target_sid: targetSid, lvl_change: val });
+            }
+        }
+
+        function addMonsterEvent() {
+            const name = document.getElementById('monster-name').value.trim() || "ก็อบลินป่า";
+            const hp = parseInt(document.getElementById('monster-hp').value) || 50;
+            const attack = parseInt(document.getElementById('monster-atk').value) || 10;
+
+            socket.emit('add_monster_event', {
+                room_code: currentRoomCode,
+                name: name,
+                hp: hp,
+                attack: attack,
+                avatar: monsterAvatarBase64
+            });
+
+            monsterAvatarBase64 = "";
+            document.getElementById('monster-avatar-preview-box').innerHTML = defaultCssAvatar;
+            document.getElementById('monster-avatar-input').value = "";
+        }
+
+        function clearCombatEvents() {
+            socket.emit('clear_combat_events', { room_code: currentRoomCode });
+        }
+
+        function enterRoom(code) {
+            currentRoomCode = code;
+            document.getElementById('lobby-screen').classList.add('hidden');
+            document.getElementById('game-room-code-tag').innerText = `รหัสห้อง: ${code}`;
+
+            if (isUserDM) {
+                document.getElementById('dm-lobby-screen').classList.remove('hidden');
+                document.getElementById('char-screen').classList.add('hidden');
+                document.getElementById('player-waiting-screen').classList.add('hidden');
+                document.getElementById('game-screen').classList.add('hidden');
+                document.getElementById('dm-monster-creator').classList.remove('hidden');
+                document.getElementById('btn-tab-dm-rewards').classList.remove('hidden');
+                document.getElementById('btn-tab-wallet').style.display = 'none';
+                document.getElementById('btn-tab-stats').style.display = 'none';
+                document.getElementById('dm-display-room-code').innerText = code;
+            } else {
+                resetStats();
+                document.getElementById('dm-lobby-screen').classList.add('hidden');
+                document.getElementById('char-screen').classList.remove('hidden');
+                document.getElementById('player-waiting-screen').classList.add('hidden');
+                document.getElementById('game-screen').classList.add('hidden');
+                document.getElementById('dm-monster-creator').classList.add('hidden');
+                document.getElementById('btn-tab-dm-rewards').classList.add('hidden');
+                document.getElementById('btn-tab-wallet').style.display = 'inline-block';
+                document.getElementById('btn-tab-stats').style.display = 'inline-block';
+                document.getElementById('display-room-code').innerText = code;
+            }
+        }
     </script>
 </body>
 </html>
