@@ -226,10 +226,14 @@ def on_use_item(data):
             }, room=room_code)
 
 
+LEVELS_PER_MILESTONE = 5
+
+
 @socketio.on('update_player_level')
 def on_update_player_level(data):
     """
-    DM กด +1 LVL ให้ผู้เล่น -> เลเวลขึ้น และได้ 'แต้มสเตตัส' มาสะสมไว้
+    DM กด +1 LVL ให้ผู้เล่น -> เลเวลขึ้น
+    ทุก ๆ 5 เลเวล (ครบรอบ) จะได้ 'แต้มสเตตัส' 5 แต้มมาสะสมไว้ 1 ครั้ง
     (ไม่บวก HP อัตโนมัติอีกต่อไป ผู้เล่นต้องไปกดอัปเองในแท็บสเตตัส)
     """
     room_code = data.get('room_code')
@@ -238,9 +242,16 @@ def on_update_player_level(data):
 
     if room_code in rooms and target_sid in rooms[room_code]["players"]:
         player = rooms[room_code]["players"][target_sid]
-        new_level = max(1, player["level"] + lvl_change)
+        old_level = player["level"]
+        new_level = max(1, old_level + lvl_change)
+
         if lvl_change > 0:
-            player["unspent_points"] = player.get("unspent_points", 0) + (lvl_change * POINTS_PER_LEVEL)
+            old_milestones = old_level // LEVELS_PER_MILESTONE
+            new_milestones = new_level // LEVELS_PER_MILESTONE
+            milestones_crossed = new_milestones - old_milestones
+            if milestones_crossed > 0:
+                player["unspent_points"] = player.get("unspent_points", 0) + (milestones_crossed * POINTS_PER_LEVEL)
+
         player["level"] = new_level
         broadcast_game_state(room_code)
 
